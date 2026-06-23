@@ -2189,59 +2189,76 @@ function toolOutputText(state: ToolPart['state'] | undefined): string {
   user-select: text;
 }
 
-/* ─── Reasoning (Zed thinking collapse) ─────────────────────────────── */
+/* ─── Thinking Block (Zed-aligned) ─── */
 
 .thinking {
   display: flex;
   flex-direction: column;
+  gap: 4px;
 }
 
 .thinking-toggle {
   display: flex;
   align-items: center;
-  gap: var(--space-6);
-  padding: var(--space-4) var(--space-8);
-  background: var(--bg-element);
-  border: none;
-  border-radius: var(--radius-sm);
-  color: var(--text-muted);
-  font-family: var(--font-ui);
-  font-size: var(--font-size-small);
-  cursor: pointer;
-  text-align: left;
+  justify-content: space-between;
   width: 100%;
-  transition:
-    background var(--duration-fast) var(--ease-out-quint),
-    color var(--duration-fast) var(--ease-out-quint);
-  user-select: none;
+  height: 18px;
+  padding-right: 4px;
+  position: relative;
+  cursor: pointer;
+  background: none;
+  border: none;
 }
 
-.thinking-toggle:hover {
-  background: var(--bg-hover);
-  color: var(--text-primary);
+.thinking-toggle-left {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  overflow: hidden;
 }
 
-.thinking-toggle svg {
+.thinking-toggle-icon {
   color: var(--text-muted);
   flex-shrink: 0;
 }
 
-.thinking-body {
-  max-height: 256px;
-  overflow-y: auto;
-  padding: var(--space-8) var(--space-12);
-  border-left: 2px solid var(--border-variant);
-  margin: var(--space-2) 0 var(--space-2) var(--space-12);
-  font-family: var(--font-mono);
-  font-size: var(--font-size-code);
+.thinking-toggle-label {
+  font-size: 13px;
   color: var(--text-muted);
-  user-select: text;
 }
 
-.thinking-body pre {
-  margin: 0;
-  white-space: pre-wrap;
-  word-break: break-word;
+.thinking-toggle-disclosure {
+  opacity: 0;
+  transition: opacity 150ms var(--ease-out-quint);
+  color: var(--text-muted);
+}
+
+.thinking-toggle:hover .thinking-toggle-disclosure {
+  opacity: 1;
+}
+
+.thinking-body {
+  margin-left: 6px;
+  padding-left: 14px;
+  padding-top: 8px;
+  border-left: 1px solid var(--border);
+  max-height: 256px;
+  overflow: hidden;
+  position: relative;
+}
+
+/* Zed-style bottom gradient mask — fades into panel bg */
+.thinking-body::after {
+  content: '';
+  position: absolute;
+  inset: auto 0 0 0;
+  height: 32px;
+  background: linear-gradient(
+    180deg,
+    rgb(20 24 33 / 0) 0%,
+    rgb(20 24 33 / 0.85) 100%
+  );
+  pointer-events: none;
 }
 
 /* ─── Inline subagent card (Zed pattern) ────────────────────────────── */
