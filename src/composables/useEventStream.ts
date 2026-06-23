@@ -1,0 +1,228 @@
+import { ref } from 'vue'
+import { fetch } from '@tauri-apps/plugin-http'
+import { useSessionStore } from '@/stores/session'
+import type {
+  SSEEvent,
+  SessionV2Info,
+  SessionListResponse,
+  SessionCreatedEvent,
+  SessionUpdatedEvent,
+  MessagePartUpdatedEvent,
+  MessagePartDeltaEvent,
+  FinishReason,
+} from '@/types'
+
+interface UseEventStreamReturn {
+  connected: ReturnType<typeof ref<boolean>>
+  connectAll: (urls: string[]) => void
+  disconnectAll: () => void
+  reconnect: () => void
+}
+
+const MAX_RECONNECT_DELAY = 30000
+
+interface ConnState {
+  url: string
+  es: EventSource | null
+  timer: ReturnType<typeof setTimeout> | null
+  attempts: number
+}
+
+export function useEventStream(): UseEventStreamReturn {
+  const store = useSessionStore()
+  const connected = ref(false)
+  const connections = new Map<string, ConnState>()
+
+  function updateAggregateStatus(): void {
+    const anyOpen = Array.from(connections.values()).some((s) => s.es !== null)
+    connected.value = anyOpen
+    store.setConnectionStatus(anyOpen ? 'connected' : 'disconnected')
+  }
+
+  function scheduleReconnect(state: ConnState): void {
+    if (state.timer) clearTimeout(state.timer)
+    const delay = Math.min(1000 * Math.pow(2, state.attempts), MAX_RECONNECT_DELAY)
+    state.timer = setTimeout(() => {
+      state.attempts++
+      connectInstance(state.url)
+    }, delay)
+  }
+
+  // Pulls the canonical session list from one instance after the SSE
+  // handshake completes. Catches up on sessions created before we connected.
+  async function reconcileInstance(url: string): Promise<void> {
+    try {
+      const response = await fetch(`${url}/api/session`)
+      if (!response.ok) throw new Error(`HTTP ${response.status}`)
+      const body: SessionListResponse = await response.json()
+
+      for (const sessionInfo of body.data) {
+        if (!store.sessions.has(sessionInfo.id)) {
+          store.addSession(sessionInfo, url)
+        }
+      }
+
+      // Backfill unknown sessions during disconnect window using the legacy
+      // /session/:id/message endpoint, which carries conversation parts.
+      for (const sessionInfo of body.data) {
+        const node = store.sessions.get(sessionInfo.id)
+        if (node?.inferredState !== 'unknown') continue
+        try {
+          const msgResponse = await fetch(`${url}/session/${sessionInfo.id}/message`)
+          if (!msgResponse.ok) continue
+          const messages: Array<{ info: { role: string }; parts: Array<{ type: string; reason?: string }> }> = await msgResponse.json()
+
+          let lastFinishReason: string | null = null
+          for (const msg of messages) {
+            for (const part of msg.parts) {
+              if (part.type === 'step-finish' && part.reason) {
+                lastFinishReason = part.reason
+              }
+            }
+          }
+
+          if (lastFinishReason && lastFinishReason !== 'tool-calls') {
+            store.backfillState(sessionInfo.id, 'completed', lastFinishReason as FinishReason)
+          } else if (!lastFinishReason) {
+            const created = sessionInfo.time.created
+            const updated = sessionInfo.time.updated
+            if (updated && created && updated > created) {
+              store.backfillState(sessionInfo.id, 'completed', null)
+            }
+          }
+        } catch {
+          // Next reconcile cycle retries
+        }
+      }
+    } catch {
+      // Silently fail — next reconnect cycle retries
+    }
+  }
+
+  function handleEvent(event: MessageEvent<string>, url: string): void {
+    try {
+      const parsed: SSEEvent = JSON.parse(event.data)
+      const data = parsed.data as Record<string, unknown>
+
+      switch (parsed.type) {
+        case 'session.created': {
+          const d = data as unknown as SessionCreatedEvent
+          if (d.info && typeof d.info === 'object') {
+            store.addSession(d.info, url)
+          } else {
+            const session = (data as Record<string, unknown>).session ?? (data as Record<string, unknown>).data
+            if (session && typeof session === 'object') {
+              store.addSession(session as SessionV2Info, url)
+            }
+          }
+          break
+        }
+        case 'session.updated': {
+          const d = data as unknown as SessionUpdatedEvent
+          if (d.sessionID && d.info) {
+            store.updateSession({ sessionID: d.sessionID, ...d.info })
+          }
+          break
+        }
+        case 'message.part.updated': {
+          const d = data as unknown as MessagePartUpdatedEvent
+          if (d.sessionID && d.part) {
+            store.addMessagePart(d)
+            // Signal A (§5.7): step-finish carries the finish reason.
+            if (d.part.type === 'step-finish') {
+              const part = d.part as { type: string; reason?: string }
+              const reason = part.reason
+              if (reason && reason !== 'tool-calls') {
+                store.backfillState(d.sessionID, 'completed', reason as FinishReason)
+              }
+            }
+          }
+          break
+        }
+        case 'message.part.delta': {
+          const d = data as unknown as MessagePartDeltaEvent
+          if (d.sessionID && d.partID && d.delta) {
+            store.appendMessageDelta(d)
+          }
+          break
+        }
+        default:
+          break
+      }
+    } catch {
+      // Ignore malformed events
+    }
+  }
+
+  function connectInstance(url: string): void {
+    // Tear down any previous attempt for this URL before re-opening.
+    const prev = connections.get(url)
+    if (prev?.es) prev.es.close()
+    if (prev?.timer) clearTimeout(prev.timer)
+
+    const state: ConnState = { url, es: null, timer: null, attempts: prev?.attempts ?? 0 }
+    connections.set(url, state)
+    store.setInstanceConnected(url, false)
+
+    try {
+      const es = new EventSource(`${url}/api/event`)
+      state.es = es
+
+      es.onopen = () => {
+        state.attempts = 0
+        store.setInstanceConnected(url, true)
+        updateAggregateStatus()
+        reconcileInstance(url)
+      }
+
+      es.onmessage = (event) => handleEvent(event, url)
+
+      es.onerror = () => {
+        store.setInstanceConnected(url, false)
+        es.close()
+        state.es = null
+        updateAggregateStatus()
+        scheduleReconnect(state)
+      }
+    } catch {
+      // EventSource construction can throw synchronously on malformed URLs.
+      scheduleReconnect(state)
+      updateAggregateStatus()
+    }
+  }
+
+  function connectAll(urls: string[]): void {
+    // Close anything we no longer want.
+    for (const [url, state] of connections.entries()) {
+      if (!urls.includes(url)) {
+        state.es?.close()
+        if (state.timer) clearTimeout(state.timer)
+        connections.delete(url)
+      }
+    }
+    // (Re)open every requested URL.
+    for (const url of urls) connectInstance(url)
+    updateAggregateStatus()
+  }
+
+  function disconnectAll(): void {
+    for (const state of connections.values()) {
+      state.es?.close()
+      if (state.timer) clearTimeout(state.timer)
+    }
+    connections.clear()
+    connected.value = false
+    store.setConnectionStatus('disconnected')
+    // Mark all store-instances as disconnected so the UI reflects reality.
+    for (const inst of store.instances) {
+      store.setInstanceConnected(inst.url, false)
+    }
+  }
+
+  function reconnect(): void {
+    const urls = Array.from(connections.keys())
+    connectAll(urls)
+  }
+
+  return { connected, connectAll, disconnectAll, reconnect }
+}
