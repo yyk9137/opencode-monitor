@@ -56,6 +56,14 @@ function toolIcon(tool: string): Component {
     return Brain
   return Wrench
 }
+
+const CARD_TOOLS = new Set([
+  'edit','write','apply_patch','aft_refactor','ast_grep_replace','aft_import',
+  'aft_delete','aft_move',
+  'bash','bash_write','bash_status','bash_watch','bash_kill'
+])
+function isCardTool(tool: string): boolean { return CARD_TOOLS.has(tool) }
+
 import { useSessionMessages } from '@/composables/useSessionMessages'
 import { fetch as httpFetch } from '@tauri-apps/plugin-http'
 import type {
@@ -964,8 +972,8 @@ function toolOutputText(state: ToolPart['state'] | undefined): string {
               </div>
 
               <!-- ─── Tool (non-task) ─────────────────────────── -->
-              <div v-else-if="part.type === 'tool' && (part as ToolPart).tool !== 'task'" class="tool-part">
-                <div class="tool-row">
+              <div v-else-if="part.type === 'tool' && (part as ToolPart).tool !== 'task'" class="tool-part" :class="{ 'tool-part--card': isCardTool((part as ToolPart).tool), 'tool-part--inline': !isCardTool((part as ToolPart).tool) }">
+                <div class="tool-header" :class="{ 'tool-header--card': isCardTool((part as ToolPart).tool) }">
                   <component :is="toolIcon((part as ToolPart).tool)" :size="12" class="tool-header-icon" />
                   <span class="tool-name">{{ (part as ToolPart).tool || 'tool' }}</span>
                   <span class="tool-state" :data-status="toolStatusKey((part as ToolPart).state?.status)">
@@ -2691,5 +2699,91 @@ function toolOutputText(state: ToolPart['state'] | undefined): string {
   flex-shrink: 0;
   color: var(--text-muted);
   opacity: 0.7;
+}
+
+/* ─── Tool Call Card/Inline Layout (Zed-aligned) ─── */
+
+.tool-part {
+  margin: 6px 0;
+}
+
+.tool-part--card {
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--bg-editor);
+  overflow: hidden;
+}
+
+.tool-part--card.tool-part--failed {
+  border-style: dashed;
+}
+
+.tool-part--inline {
+  margin: 4px 0;
+}
+
+.tool-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  position: relative;
+  width: 100%;
+}
+
+.tool-header--card {
+  padding: 2px;
+  border-radius: 5px 5px 0 0;
+  background: var(--bg-element);
+}
+
+.tool-header-left {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  height: 18px;
+  font-size: 13px;
+  overflow: hidden;
+}
+
+.tool-header-icon {
+  color: var(--text-muted);
+  flex-shrink: 0;
+}
+
+.tool-header-name {
+  font-family: var(--font-mono);
+  font-size: 13px;
+  color: var(--text-muted);
+}
+
+.tool-header-gradient {
+  position: absolute;
+  top: 0;
+  right: 0;
+  width: 48px;
+  height: 100%;
+  background: linear-gradient(
+    90deg,
+    transparent 0%,
+    var(--bg-element) 100%
+  );
+  pointer-events: none;
+}
+
+.tool-disclosure {
+  opacity: 0;
+  transition: opacity 150ms var(--ease-out-quint);
+  color: var(--text-muted);
+}
+
+.tool-header:hover .tool-disclosure {
+  opacity: 1;
+}
+
+.tool-body {
+  margin-left: 6px;
+  padding: 8px 14px;
+  border-left: 1px solid var(--border);
+  border-top: 1px solid var(--border);
 }
 </style>
