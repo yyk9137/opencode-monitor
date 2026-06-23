@@ -35,6 +35,7 @@ import {
   X,
   XCircle,
 } from 'lucide-vue-next'
+import FileIcon from '@/components/FileIcon.vue'
 import type { Component } from 'vue'
 import { useSessionStore } from '@/stores/session'
 import { useSessionActions } from '@/composables/useSessionActions'
@@ -63,6 +64,20 @@ const CARD_TOOLS = new Set([
   'bash','bash_write','bash_status','bash_watch','bash_kill'
 ])
 function isCardTool(tool: string): boolean { return CARD_TOOLS.has(tool) }
+
+function extractFilePath(_tool: string, input: unknown): string | null {
+  if (typeof input !== 'object' || !input) return null
+  const obj = input as Record<string, unknown>
+  const str = (k: string) => (k in obj && typeof obj[k] === 'string' ? obj[k] as string : null)
+  // read / edit / write / apply_patch / aft_zoom / aft_outline / aft_inspect
+  return str('filePath')
+    // grep
+    ?? str('path')
+    // glob
+    ?? str('pattern')
+    // ast_grep_search / ast_grep_replace (paths array, take first)
+    ?? (Array.isArray(obj.paths) && obj.paths.length ? String(obj.paths[0]) : null)
+}
 
 import { useSessionMessages } from '@/composables/useSessionMessages'
 import { fetch as httpFetch } from '@tauri-apps/plugin-http'
@@ -975,6 +990,7 @@ function toolOutputText(state: ToolPart['state'] | undefined): string {
               <div v-else-if="part.type === 'tool' && (part as ToolPart).tool !== 'task'" class="tool-part" :class="{ 'tool-part--card': isCardTool((part as ToolPart).tool), 'tool-part--inline': !isCardTool((part as ToolPart).tool) }">
                 <div class="tool-header" :class="{ 'tool-header--card': isCardTool((part as ToolPart).tool) }">
                   <component :is="toolIcon((part as ToolPart).tool)" :size="12" class="tool-header-icon" />
+                  <FileIcon v-if="extractFilePath((part as ToolPart).tool, (part as ToolPart).state?.input)" :file-name="extractFilePath((part as ToolPart).tool, (part as ToolPart).state?.input)!" />
                   <span class="tool-name">{{ (part as ToolPart).tool || 'tool' }}</span>
                   <span class="tool-state" :data-status="toolStatusKey((part as ToolPart).state?.status)">
                     <Loader2 v-if="(part as ToolPart).state?.status === 'running'" :size="10" class="spin" />
