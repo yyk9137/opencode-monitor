@@ -410,7 +410,7 @@ function statusGlyph(session: SessionNode): 'running' | 'completed' | 'error' | 
 
 .status-dot[data-state='running'] {
   background: var(--success);
-  box-shadow: 0 0 0 1.5px rgba(161, 193, 129, 0.20);
+  box-shadow: 0 0 0 1.5px rgba(170, 217, 76, 0.20);
   animation: pulse-dot 2.2s var(--ease-out-quint) infinite;
 }
 
@@ -420,12 +420,12 @@ function statusGlyph(session: SessionNode): 'running' | 'completed' | 'error' | 
 
 .status-dot[data-state='error'] {
   background: var(--error);
-  box-shadow: 0 0 0 1.5px rgba(208, 114, 119, 0.18);
+  box-shadow: 0 0 0 1.5px rgba(217, 87, 87, 0.18);
 }
 
 .status-dot[data-state='stuck'] {
   background: var(--warning);
-  box-shadow: 0 0 0 1.5px rgba(222, 193, 132, 0.25);
+  box-shadow: 0 0 0 1.5px rgba(230, 180, 80, 0.25);
   animation: pulse-dot-warning 1.4s var(--ease-out-quint) infinite;
 }
 
@@ -436,22 +436,22 @@ function statusGlyph(session: SessionNode): 'running' | 'completed' | 'error' | 
 
 @keyframes pulse-dot {
   0%, 100% {
-    box-shadow: 0 0 0 1.5px rgba(161, 193, 129, 0.22);
+    box-shadow: 0 0 0 1.5px rgba(170, 217, 76, 0.22);
     transform: scale(1);
   }
   50% {
-    box-shadow: 0 0 0 4px rgba(161, 193, 129, 0.04);
+    box-shadow: 0 0 0 4px rgba(170, 217, 76, 0.04);
     transform: scale(1.05);
   }
 }
 
 @keyframes pulse-dot-warning {
   0%, 100% {
-    box-shadow: 0 0 0 1.5px rgba(222, 193, 132, 0.30);
+    box-shadow: 0 0 0 1.5px rgba(230, 180, 80, 0.30);
     transform: scale(1);
   }
   50% {
-    box-shadow: 0 0 0 6px rgba(222, 193, 132, 0.05);
+    box-shadow: 0 0 0 6px rgba(230, 180, 80, 0.05);
     transform: scale(1.08);
   }
 }

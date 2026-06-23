@@ -2,37 +2,37 @@
 
 :root {
   /* 背景层级 */
-  --bg-app:        #0a0e14;
-  --bg-editor:     #0f1419;
-  --bg-panel:      #0b0e14;
-  --bg-elevated:   #11151c;
-  --bg-element:    #1a1f29;
-  --bg-hover:      #1a1f29;
-  --bg-active:     #232838;
-  --bg-selected:   #232838;
+  --bg-app:        #0d1017;
+  --bg-editor:     #10141c;
+  --bg-panel:      #141821;
+  --bg-elevated:   #0f131a;
+  --bg-element:    #1b1f29;
+  --bg-hover:      #1b1f29;
+  --bg-active:     #2b3040;
+  --bg-selected:   #2b3040;
 
   /* 文字 */
-  --text-primary:    #e6e1cf;
-  --text-muted:      #8d939e;
-  --text-placeholder: #5c6773;
-  --text-accent:     #ffb454;
+  --text-primary:    #bfbdb6;
+  --text-muted:      #6e7689;
+  --text-placeholder: #454d5b;
+  --text-accent:     #e6b450;
 
   /* 边框 */
-  --border:          #1d2433;
-  --border-variant:  #11151c;
-  --border-focused:  #ffb454;
+  --border:          #1b1f29;
+  --border-variant:  #0d1017;
+  --border-focused:  #e6b450;
 
   /* 语义色 */
-  --success:   #7fd962;
-  --error:     #e26b73;
+  --success:   #70bf56;
+  --error:     #d95757;
   --warning:   #ffb454;
   --info:      #59c2ff;
-  --hint:      #5c6773;
+  --hint:      #5a6673;
 
   /* VCS 色 */
-  --vc-added:    #7fd962;
-  --vc-modified: #ffb454;
-  --vc-deleted:  #e26b73;
+  --vc-added:    #70bf56;
+  --vc-modified: #73b8ff;
+  --vc-deleted:  #f26d78;
 
   /* 字体 */
   --font-ui:   'IBM Plex Sans', 'Segoe UI', system-ui, sans-serif;

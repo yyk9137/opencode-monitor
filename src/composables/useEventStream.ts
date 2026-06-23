@@ -62,6 +62,21 @@ export function useEventStream(): UseEventStreamReturn {
         }
       }
 
+      // Clean up stale sessions: if the monitor's store has sessions tagged
+      // to this instance that no longer exist on the server (e.g. after an
+      // opencode restart or external abort), mark them as 'error' so they
+      // stop being flagged as running/stuck.
+      const serverSessionIds = new Set(body.data.map((s) => s.id))
+      for (const [sessionId, node] of store.sessions.entries()) {
+        if (
+          node.instanceUrl === url &&
+          !serverSessionIds.has(sessionId) &&
+          (node.inferredState === 'running' || node.inferredState === 'unknown')
+        ) {
+          store.backfillState(sessionId, 'error', null)
+        }
+      }
+
       // Backfill unknown sessions during disconnect window using the legacy
       // /session/:id/message endpoint, which carries conversation parts.
       for (const sessionInfo of body.data) {
@@ -124,6 +139,49 @@ export function useEventStream(): UseEventStreamReturn {
           }
           break
         }
+        case 'session.idle': {
+          // Session became idle — LLM finished responding, no more tool calls
+          // pending. This fires when a session transitions from active to
+          // idle, including after an abort or natural completion.
+          const d = data as { sessionID?: string }
+          if (d.sessionID) {
+            store.backfillState(d.sessionID, 'completed', null)
+          }
+          break
+        }
+        case 'session.status': {
+          // Session status change — may indicate abort, pause, or resume.
+          // Map known statuses to inferred states.
+          const d = data as { sessionID?: string; status?: string }
+          if (d.sessionID) {
+            const status = d.status ?? ''
+            if (status === 'idle' || status === 'completed') {
+              store.backfillState(d.sessionID, 'completed', null)
+            } else if (status === 'error' || status === 'aborted') {
+              store.backfillState(d.sessionID, 'error', null)
+            }
+            // 'running' status is handled by message.part.updated events
+            // which already set inferredState to 'running'
+          }
+          break
+        }
+        case 'session.error': {
+          // Session encountered an error — mark as error state
+          const d = data as { sessionID?: string }
+          if (d.sessionID) {
+            store.backfillState(d.sessionID, 'error', null)
+          }
+          break
+        }
+        case 'session.deleted': {
+          // Session was deleted/archived — mark as error so it stops being
+          // flagged as running/stuck and gets cleaned up
+          const d = data as { sessionID?: string; info?: SessionV2Info }
+          if (d.sessionID) {
+            store.backfillState(d.sessionID, 'error', null)
+          }
+          break
+        }
         case 'message.part.updated': {
           const d = data as unknown as MessagePartUpdatedEvent
           if (d.sessionID && d.part) {
@@ -175,7 +233,9 @@ export function useEventStream(): UseEventStreamReturn {
         reconcileInstance(url)
       }
 
-      es.onmessage = (event) => handleEvent(event, url)
+      es.onmessage = (event) => {
+        handleEvent(event, url)
+      }
 
       es.onerror = () => {
         store.setInstanceConnected(url, false)

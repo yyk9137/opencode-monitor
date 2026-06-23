@@ -1,0 +1,11 @@
+[
+  {
+    "label": "Launch OpenCode Monitor",
+    "command": "F:\\Projects\\opencode-monitor\\src-tauri\\target\\release\\opencode-monitor.exe",
+    "args": [],
+    "use_new_terminal": true,
+    "allow_concurrent_runs": true,
+    "reveal": "never",
+    "hide": "always"
+  }
+]

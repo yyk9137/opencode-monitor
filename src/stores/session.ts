@@ -15,6 +15,7 @@ import type {
   RevertResult,
   ForkResult,
   AbortResult,
+  MessagePart,
 } from '@/types'
 
 export interface InstanceConnection {
@@ -266,6 +267,23 @@ export const useSessionStore = defineStore('session', () => {
     sessions.value = map
   }
 
+  // Replace a session's accumulated parts (used after revert/unrevert to
+  // reflect the post-revert conversation from the server). shallowRef must
+  // be reassigned to trigger reactivity — mutating the inner array is NOT
+  // enough.
+  function setMessages(sessionId: string, messages: MessagePart[]): void {
+    const map = new Map(sessions.value)
+    const node = map.get(sessionId)
+    if (!node) return
+    map.set(sessionId, {
+      ...node,
+      messages,
+      lastEventTime: Date.now(),
+      lastEventType: 'set-messages',
+    })
+    sessions.value = map
+  }
+
   function setStuckThreshold(ms: number): void {
     stuckThresholdMs.value = ms
   }
@@ -413,8 +431,13 @@ export const useSessionStore = defineStore('session', () => {
     const threshold = Date.now() - stuckThresholdMs.value
     const result: SessionNode[] = []
     for (const session of sessions.value.values()) {
+      // Only 'running' sessions can be stuck — 'unknown' sessions finished
+      // before the monitor connected and shouldn't be flagged. The
+      // useStuckDetection composable verifies 'running' sessions via API
+      // before raising alerts, so this computed is kept in sync with its
+      // results via the stuckAlerts store field.
       if (
-        (session.inferredState === 'running' || session.inferredState === 'unknown') &&
+        session.inferredState === 'running' &&
         session.lastEventTime < threshold
       ) {
         result.push(session)
@@ -544,6 +567,7 @@ export const useSessionStore = defineStore('session', () => {
     setConnectionStatus,
     selectSession,
     backfillState,
+    setMessages,
     setStuckThreshold,
     openTab,
     closeTab,

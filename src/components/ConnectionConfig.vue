@@ -318,7 +318,7 @@ async function startScan(): Promise<void> {
 
 .status-pill[data-state='connected'] .dot {
   background: var(--success);
-  box-shadow: 0 0 0 2px rgba(127, 217, 98, 0.22);
+  box-shadow: 0 0 0 2px rgba(112, 191, 86, 0.22);
   animation: pulse-running 2.4s var(--ease-out-quint) infinite;
 }
 
@@ -457,7 +457,7 @@ async function startScan(): Promise<void> {
 
 .inst-dot[data-connected='true'] {
   background: var(--success);
-  box-shadow: 0 0 0 1.5px rgba(127, 217, 98, 0.22);
+  box-shadow: 0 0 0 1.5px rgba(112, 191, 86, 0.22);
   animation: pulse-running 2.2s var(--ease-out-quint) infinite;
 }
 
@@ -555,8 +555,8 @@ async function startScan(): Promise<void> {
 }
 
 .scan-btn.active {
-  background: rgba(255, 180, 84, 0.10);
-  border-color: rgba(255, 180, 84, 0.45);
+  background: rgba(230, 180, 80, 0.10);
+  border-color: rgba(230, 180, 80, 0.45);
   color: var(--text-accent);
 }
 
@@ -723,8 +723,8 @@ async function startScan(): Promise<void> {
 .spin { animation: spin 1s linear infinite; }
 
 @keyframes pulse-running {
-  0%, 100% { box-shadow: 0 0 0 2px rgba(127, 217, 98, 0.22); }
-  50%      { box-shadow: 0 0 0 4px rgba(127, 217, 98, 0.05); }
+  0%, 100% { box-shadow: 0 0 0 2px rgba(112, 191, 86, 0.22); }
+  50%      { box-shadow: 0 0 0 4px rgba(112, 191, 86, 0.05); }
 }
 
 @keyframes pulse-active {

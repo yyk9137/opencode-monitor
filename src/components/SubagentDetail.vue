@@ -76,10 +76,14 @@ const activeView = computed<ActiveView | null>(() => {
   if (!tabId) return null
   const node = store.sessions.get(tabId)
   if (!node) return null
-  // Check tree for children — sessions Map nodes have children: []
+  // Look up tree node for children info. Use the store node directly for
+  // messages (not the tree shallow copy) so that addMessagePart/flushDeltas
+  // updates are reflected in activeView.session.messages and trigger the
+  // displayParts computed. Merge children from the tree into the node so
+  // that template code using activeView.session.children works correctly.
   const treeNode = store.tree.find(n => n.id === tabId)
   return {
-    session: treeNode ?? node,  // tree node has children populated
+    session: treeNode ? { ...node, children: treeNode.children } : node,
     isParent: treeNode ? treeNode.children.length > 0 : false,
   }
 })
@@ -159,18 +163,9 @@ async function openChildFromList(childId: string): Promise<void> {
   bodyMode.value = 'stream'
 }
 
-// ─── Streaming: parts ref + scroll behaviour ───────────────────────────
+// ─── Streaming: scroll behaviour ──────────────────────────────────────
 
 const streamRef = ref<HTMLElement | null>(null)
-const parts = shallowRef<MessagePart[]>([])
-
-watch(
-  () => activeView.value?.session.messages,
-  (next) => {
-    parts.value = next ?? []
-  },
-  { immediate: true },
-)
 
 // ─── Backfill legacy parts when entering a session ────────────────────
 
@@ -195,27 +190,39 @@ watch(
   { immediate: true },
 )
 
-const displayParts = computed<MessagePart[]>(() => {
-  // Merge live parts (from SSE) with backfilled parts (from legacy API).
-  // Deduplicate by part ID first, then by content signature (type+text+callID)
-  // because live SSE parts and backfilled legacy API parts may have different IDs.
-  const seen = new Set<string>()
-  const result: MessagePart[] = []
+// ─── Display pipeline: merge backfill + live, dedup by part.id ────────
 
-  // Add backfilled parts first (historical), then live parts (newer)
-  for (const p of [...backfilledParts.value, ...parts.value]) {
-    const sig = partSignature(p)
-    if (seen.has(sig)) continue
-    seen.add(sig)
-    result.push(p)
+const displayParts = computed<MessagePart[]>(() => {
+  const liveParts = activeView.value?.session.messages ?? []
+  const seen = new Map<string, MessagePart>()
+
+  // Backfill first (historical, in chronological order from API).
+  // Live parts second: updates overwrite existing entries (Map.set),
+  // new parts are appended at the end (chronologically after backfill).
+  for (const p of [...backfilledParts.value, ...liveParts]) {
+    if (!p.id) continue  // defensive: skip malformed parts
+    const existing = seen.get(p.id)
+    if (!existing) {
+      seen.set(p.id, p)
+      continue
+    }
+    // For text parts, keep the version with more content.
+    // During streaming, the live version grows via deltas and will be
+    // longer than the backfill snapshot.
+    if (p.type === 'text' && existing.type === 'text') {
+      if (((p as TextPart).text?.length ?? 0) >= ((existing as TextPart).text?.length ?? 0)) {
+        seen.set(p.id, p)
+      }
+    } else {
+      // Non-text parts: live version is always newer (status updates etc.)
+      seen.set(p.id, p)
+    }
   }
 
-  // Sort by time.created if available, otherwise preserve order
-  return result.sort((a, b) => {
-    const ta = (a as { time?: { created?: number } }).time?.created ?? 0
-    const tb = (b as { time?: { created?: number } }).time?.created ?? 0
-    return ta - tb
-  })
+  return Array.from(seen.values())
+  // No sort needed — backfill API returns chronological order, and
+  // Map preserves insertion order. Updated entries keep their original
+  // position; new live parts are appended at the end.
 })
 
 // ─── Revert affordances ────────────────────────────────────────────────
@@ -226,7 +233,11 @@ const displayParts = computed<MessagePart[]>(() => {
 
 function canRevert(part: MessagePart): boolean {
   if (!activeView.value) return false
-  if (activeView.value.session.inferredState === 'running') return false
+  // Block revert unless we're confident the session is NOT running.
+  // 'unknown' means we couldn't determine state during bootstrap —
+  // the opencode API returns 409 for running sessions, so be defensive.
+  const state = activeView.value.session.inferredState
+  if (state === 'running' || state === 'unknown') return false
   return part.type === 'text' && !(part as TextPart).synthetic
 }
 
@@ -235,22 +246,16 @@ async function handleRevert(part: MessagePart): Promise<void> {
   await revert(activeView.value.session.id, part.messageID)
 }
 
-function partSignature(p: MessagePart): string {
-  // Create a signature for deduplication
-  if (p.type === 'text') return `text:${(p as TextPart).text?.slice(0, 100) ?? ''}`
-  if (p.type === 'tool') {
-    const tp = p as ToolPart
-    return `tool:${tp.tool}:${tp.callID ?? ''}`
-  }
-  if (p.type === 'reasoning') return `reasoning:${(p as { text?: string }).text?.slice(0, 100) ?? ''}:${p.id}`
-  // For other types, use ID as signature (they should be unique enough)
-  return `${p.type}:${p.id}`
-}
-
 // Hide step-start and step-finish entirely (kept in data for state inference).
+// Also hide synthetic text parts that contain ONLY system injection markers
+// (temporal comments, internal_reminder tags) — these are not user-visible
+// content in Zed and shouldn't appear in the monitor either.
 const visibleParts = computed<MessagePart[]>(() => {
   return displayParts.value.filter(
-    (p) => p.type !== 'step-start' && p.type !== 'step-finish',
+    (p) =>
+      p.type !== 'step-start' &&
+      p.type !== 'step-finish' &&
+      !isSyntheticText(p),
   )
 })
 
@@ -264,7 +269,7 @@ function onScroll(event: Event): void {
   stickToBottom = distanceFromBottom < 32
 }
 
-watch(displayParts, async () => {
+watch(visibleParts, async () => {
   if (!stickToBottom) return
   await nextTick()
   const el = streamRef.value
@@ -344,6 +349,37 @@ function isTaskResultText(part: MessagePart): boolean {
   if (part.type !== 'text') return false
   const text = (part as TextPart).text || ''
   return /<task\s+id\s*=/i.test(text) && /state\s*=\s*["'](?:completed|running)["']/i.test(text)
+}
+
+// ─── System injection filtering ─────────────────────────────────────────
+// The magic-context system injects temporal markers (<!-- +7m -->) and
+// internal reminders (<internal_reminder>...</internal_reminder>) into the
+// text stream. These are system-internal and should not be displayed to the
+// user. Zed strips them; the monitor must do the same.
+function stripSystemInjections(text: string): string {
+  return text
+    // Remove HTML comments (temporal markers like <!-- +7m -->, <!-- +3d 4h -->)
+    .replace(/<!--\s*\+[0-9]+[a-z\s]*-->/gi, '')
+    // Remove <internal_reminder>...</internal_reminder> blocks
+    .replace(/<internal_reminder>[\s\S]*?<\/internal_reminder>/gi, '')
+    // Remove <session-history> blocks if present
+    .replace(/<session-history>[\s\S]*?<\/session-history>/gi, '')
+    // Clean up excessive blank lines left behind
+    .replace(/\n{3,}/g, '\n\n')
+    .trim()
+}
+
+function isSyntheticText(part: MessagePart): boolean {
+  if (part.type !== 'text') return false
+  const text = (part as TextPart).text || ''
+  // A part is synthetic (system-injected) if it ONLY contains system markers
+  // and no visible content after stripping.
+  // NOTE: Empty text is NOT synthetic — it may be a newly created text part
+  // that hasn't received its first delta yet. Filtering it out would cause
+  // the part to disappear from the DOM until the first delta arrives, then
+  // reappear — which can confuse Vue's v-for key tracking.
+  if (text.length === 0) return false
+  return stripSystemInjections(text).length === 0
 }
 
 function taskResultSummary(text: string): string {
@@ -507,27 +543,31 @@ async function fetchChildParts(sessionId: string): Promise<void> {
   }
 }
 
-// Auto-fetch child session parts when task tool parts appear in display
-// Also periodically re-fetch running child sessions to get streaming updates
-// Also fetch child session info from API if not in store (SSE may not send session.created for children)
+// Auto-fetch child session parts when task tool parts appear in display.
+// Debounced to avoid running on every delta flush (60fps during streaming).
+// The periodic 3s interval (line ~613) handles running child session updates.
+let childFetchDebounce: ReturnType<typeof setTimeout> | null = null
 watch(displayParts, () => {
-  for (const part of displayParts.value) {
-    if (part.type === 'tool' && (part as ToolPart).tool === 'task') {
-      const sid = taskChildSessionId(part as ToolPart)
-      if (sid) {
-        const childNode = store.sessions.get(sid)
-        // If child session not in store, fetch it from API and add it
-        if (!childNode) {
-          fetchChildSession(sid)
-        }
-        const isRunning = !childNode || childNode.inferredState === 'running' || childNode.inferredState === 'unknown'
-        // Fetch if not yet fetched, or if child is still running (to get updates)
-        if (!fetchedChildParts.value.has(sid) || isRunning) {
-          fetchChildParts(sid)
+  if (childFetchDebounce) clearTimeout(childFetchDebounce)
+  childFetchDebounce = setTimeout(() => {
+    for (const part of displayParts.value) {
+      if (part.type === 'tool' && (part as ToolPart).tool === 'task') {
+        const sid = taskChildSessionId(part as ToolPart)
+        if (sid) {
+          const childNode = store.sessions.get(sid)
+          // If child session not in store, fetch it from API and add it
+          if (!childNode) {
+            fetchChildSession(sid)
+          }
+          const isRunning = !childNode || childNode.inferredState === 'running' || childNode.inferredState === 'unknown'
+          // Fetch if not yet fetched, or if child is still running (to get updates)
+          if (!fetchedChildParts.value.has(sid) || isRunning) {
+            fetchChildParts(sid)
+          }
         }
       }
     }
-  }
+  }, 500)
 }, { immediate: true })
 
 // Fetch a child session's info from the API and add it to the store
@@ -871,7 +911,7 @@ function toolOutputText(state: ToolPart['state'] | undefined): string {
                 class="text-part"
                 :class="{ 'text-part--reverted': revertedMessageIds.has(part.messageID) }"
                 :data-synthetic="(part as TextPart).synthetic ? 'true' : 'false'"
-              >{{ (part as TextPart).text || '' }}</pre>
+              >{{ stripSystemInjections((part as TextPart).text || '') }}</pre>
 
               <!-- ─── Task result (text containing <task> XML) ──── -->
               <div
@@ -889,10 +929,10 @@ function toolOutputText(state: ToolPart['state'] | undefined): string {
                     :is="expandedTaskResults.has(part.id) ? ChevronDown : ChevronRight"
                     :size="12"
                   />
-                  <span class="task-result-summary">{{ taskResultSummary((part as TextPart).text || '') }}</span>
+                  <span class="task-result-summary">{{ taskResultSummary(stripSystemInjections((part as TextPart).text || '')) }}</span>
                 </button>
                 <div v-show="expandedTaskResults.has(part.id)" class="task-result-body">
-                  <pre>{{ taskResultBody((part as TextPart).text || '') }}</pre>
+                  <pre>{{ taskResultBody(stripSystemInjections((part as TextPart).text || '')) }}</pre>
                 </div>
               </div>
 
@@ -977,7 +1017,7 @@ function toolOutputText(state: ToolPart['state'] | undefined): string {
                       :data-type="childPart.type"
                     >
                       <template v-if="childPart.type === 'text'">
-                        <pre class="child-text">{{ (childPart as TextPart).text?.slice(-240) || '' }}</pre>
+                        <pre class="child-text">{{ stripSystemInjections((childPart as TextPart).text || '').slice(-240) }}</pre>
                       </template>
                       <template v-else-if="childPart.type === 'tool'">
                         <span class="child-tool">
@@ -1074,7 +1114,7 @@ function toolOutputText(state: ToolPart['state'] | undefined): string {
                       :data-type="cp.type"
                     >
                       <span v-if="cp.type === 'text'" class="preview-text">
-                        {{ ((cp as TextPart).text || '').trim() }}
+                        {{ stripSystemInjections((cp as TextPart).text || '').trim() }}
                       </span>
                       <span v-else-if="cp.type === 'tool'" class="preview-tool">
                         <span class="preview-tool-name">{{ (cp as ToolPart).tool || 'tool' }}</span>
@@ -1391,16 +1431,16 @@ function toolOutputText(state: ToolPart['state'] | undefined): string {
      underline. */
   background-image: linear-gradient(
     to right,
-    rgba(255, 180, 84, 0.06) 0,
-    rgba(255, 180, 84, 0.06) 100%
+    rgba(230, 180, 80, 0.06) 0,
+    rgba(230, 180, 80, 0.06) 100%
   );
 }
 
 .tab[data-parent='true'].active {
   background-image: linear-gradient(
     to right,
-    rgba(255, 180, 84, 0.10) 0,
-    rgba(255, 180, 84, 0.10) 100%
+    rgba(230, 180, 80, 0.10) 0,
+    rgba(230, 180, 80, 0.10) 100%
   );
 }
 
@@ -1434,22 +1474,22 @@ function toolOutputText(state: ToolPart['state'] | undefined): string {
 
 @keyframes pulse-tab-running {
   0%, 100% {
-    box-shadow: 0 0 0 1.5px rgba(127, 217, 98, 0.30);
+    box-shadow: 0 0 0 1.5px rgba(112, 191, 86, 0.30);
     transform: scale(1);
   }
   50% {
-    box-shadow: 0 0 0 4px rgba(127, 217, 98, 0.05);
+    box-shadow: 0 0 0 4px rgba(112, 191, 86, 0.05);
     transform: scale(1.08);
   }
 }
 
 @keyframes pulse-tab-warning {
   0%, 100% {
-    box-shadow: 0 0 0 1.5px rgba(255, 180, 84, 0.35);
+    box-shadow: 0 0 0 1.5px rgba(230, 180, 80, 0.35);
     transform: scale(1);
   }
   50% {
-    box-shadow: 0 0 0 6px rgba(255, 180, 84, 0.06);
+    box-shadow: 0 0 0 6px rgba(230, 180, 80, 0.06);
     transform: scale(1.12);
   }
 }
@@ -1521,13 +1561,13 @@ function toolOutputText(state: ToolPart['state'] | undefined): string {
 
 .status-dot[data-state='running'] {
   background: var(--success);
-  box-shadow: 0 0 0 1.5px rgba(127, 217, 98, 0.25);
+  box-shadow: 0 0 0 1.5px rgba(112, 191, 86, 0.25);
   animation: pulse-header-running 2.2s var(--ease-out-quint) infinite;
 }
 
 .status-dot[data-state='error'] {
   background: var(--error);
-  box-shadow: 0 0 0 1.5px rgba(226, 107, 115, 0.25);
+  box-shadow: 0 0 0 1.5px rgba(217, 87, 87, 0.25);
 }
 
 .status-dot[data-state='stuck'] {
@@ -1552,22 +1592,22 @@ function toolOutputText(state: ToolPart['state'] | undefined): string {
 
 @keyframes pulse-header-running {
   0%, 100% {
-    box-shadow: 0 0 0 1.5px rgba(127, 217, 98, 0.25);
+    box-shadow: 0 0 0 1.5px rgba(112, 191, 86, 0.25);
     transform: scale(1);
   }
   50% {
-    box-shadow: 0 0 0 4px rgba(127, 217, 98, 0.04);
+    box-shadow: 0 0 0 4px rgba(112, 191, 86, 0.04);
     transform: scale(1.06);
   }
 }
 
 @keyframes pulse-header-warning {
   0%, 100% {
-    box-shadow: 0 0 0 1.5px rgba(255, 180, 84, 0.35);
+    box-shadow: 0 0 0 1.5px rgba(230, 180, 80, 0.35);
     transform: scale(1);
   }
   50% {
-    box-shadow: 0 0 0 6px rgba(255, 180, 84, 0.05);
+    box-shadow: 0 0 0 6px rgba(230, 180, 80, 0.05);
     transform: scale(1.10);
   }
 }
@@ -1579,8 +1619,8 @@ function toolOutputText(state: ToolPart['state'] | undefined): string {
   align-items: center;
   gap: var(--space-8);
   padding: var(--space-8) var(--space-12);
-  background: rgba(255, 180, 84, 0.07);
-  border: 1px solid rgba(255, 180, 84, 0.30);
+  background: rgba(230, 180, 80, 0.07);
+  border: 1px solid rgba(230, 180, 80, 0.30);
   border-radius: var(--radius-sm);
   color: var(--warning);
   font-size: var(--font-size-small);
@@ -1652,10 +1692,10 @@ function toolOutputText(state: ToolPart['state'] | undefined): string {
 
 .parent-summary.active {
   background: var(--bg-selected);
-  border-color: rgba(255, 180, 84, 0.35);
+  border-color: rgba(230, 180, 80, 0.35);
   color: var(--text-primary);
   box-shadow:
-    inset 0 0 0 1px rgba(255, 180, 84, 0.30),
+    inset 0 0 0 1px rgba(230, 180, 80, 0.30),
     0 0 0 0 transparent;
 }
 
@@ -1889,13 +1929,13 @@ function toolOutputText(state: ToolPart['state'] | undefined): string {
 }
 
 @keyframes pulse-running-child {
-  0%, 100% { box-shadow: 0 0 0 1.5px rgba(127, 217, 98, 0.25); }
-  50%      { box-shadow: 0 0 0 4px rgba(127, 217, 98, 0.05); }
+  0%, 100% { box-shadow: 0 0 0 1.5px rgba(112, 191, 86, 0.25); }
+  50%      { box-shadow: 0 0 0 4px rgba(112, 191, 86, 0.05); }
 }
 
 @keyframes pulse-warning-child {
-  0%, 100% { box-shadow: 0 0 0 1.5px rgba(255, 180, 84, 0.32); }
-  50%      { box-shadow: 0 0 0 6px rgba(255, 180, 84, 0.06); }
+  0%, 100% { box-shadow: 0 0 0 1.5px rgba(230, 180, 80, 0.32); }
+  50%      { box-shadow: 0 0 0 6px rgba(230, 180, 80, 0.06); }
 }
 
 /* ─── Message stream ────────────────────────────────────────────────── */
@@ -2191,11 +2231,11 @@ function toolOutputText(state: ToolPart['state'] | undefined): string {
 }
 
 .subagent-card[data-state='error'] {
-  border: 1px dashed rgba(226, 107, 115, 0.45);
+  border: 1px dashed rgba(217, 87, 87, 0.45);
 }
 
 .subagent-card[data-state='running'] {
-  border-color: rgba(127, 217, 98, 0.30);
+  border-color: rgba(112, 191, 86, 0.30);
 }
 
 .card-header {
@@ -2303,7 +2343,7 @@ function toolOutputText(state: ToolPart['state'] | undefined): string {
 }
 
 .preview-item[data-type='text'] { border-left-color: rgba(89, 194, 255, 0.35); color: var(--text-muted); }
-.preview-item[data-type='tool'] { border-left-color: rgba(127, 217, 98, 0.30); color: var(--text-muted); }
+.preview-item[data-type='tool'] { border-left-color: rgba(112, 191, 86, 0.30); color: var(--text-muted); }
 .preview-item[data-type='reasoning'] { border-left-color: rgba(141, 147, 158, 0.40); color: var(--text-placeholder); }
 
 .preview-text {
@@ -2471,12 +2511,12 @@ function toolOutputText(state: ToolPart['state'] | undefined): string {
 }
 
 .part-action-btn--warning {
-  color: rgba(255, 180, 84, 0.65);
+  color: rgba(230, 180, 80, 0.65);
 }
 
 .part-action-btn--warning:hover {
   color: var(--warning);
-  border-color: rgba(255, 180, 84, 0.45);
+  border-color: rgba(230, 180, 80, 0.45);
 }
 
 /* ─── Ghost state for reverted messages ──────────────────────────────────── */

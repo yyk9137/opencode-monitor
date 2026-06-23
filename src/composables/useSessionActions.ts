@@ -30,16 +30,11 @@ export function useSessionActions(): UseSessionActionsReturn {
   async function refreshParts(sessionId: string): Promise<void> {
     try {
       const fetched = await fetchParts(sessionId)
-      // Update the session's messages in the store
-      const map = new Map(store.sessions)
-      const node = map.get(sessionId)
-      if (node) {
-        map.set(sessionId, { ...node, messages: fetched })
-        // Trigger reactivity by reassigning
-        // Note: store.sessions is a shallowRef, so we need to trigger update
-        // The store doesn't have a direct "setMessages" action, so we use
-        // the sessions map reassignment pattern
-      }
+      // Use the store action so the shallowRef is actually reassigned —
+      // the previous implementation built a new Map but never wrote it
+      // back to store.sessions, so revert/unrevert produced no visible
+      // effect on tool-call status, file diffs, or message content.
+      store.setMessages(sessionId, fetched)
     } catch {
       // silently fail — the SSE will eventually catch up
     }

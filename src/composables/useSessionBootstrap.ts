@@ -100,16 +100,27 @@ export function useSessionBootstrap(): UseSessionBootstrapReturn {
           if (!msgResponse.ok) continue
           const messages: LegacyMessage[] = await msgResponse.json()
 
+          // Scan all parts in order. Track the last step-finish reason AND
+          // whether any tool part has state.status === 'running'. A session
+          // whose last tool call is still running is actively running,
+          // regardless of what step-finish reasons say.
           let lastFinishReason: string | null = null
+          let hasRunningTool = false
           for (const msg of messages) {
             for (const part of msg.parts) {
               if (part.type === 'step-finish' && part.reason) {
                 lastFinishReason = part.reason
               }
+              if (part.type === 'tool' && (part as { state?: { status?: string } }).state?.status === 'running') {
+                hasRunningTool = true
+              }
             }
           }
 
-          if (lastFinishReason && lastFinishReason !== 'tool-calls') {
+          if (hasRunningTool) {
+            // A tool is still executing — session is running.
+            store.backfillState(sessionInfo.id, 'running', null)
+          } else if (lastFinishReason && lastFinishReason !== 'tool-calls') {
             store.backfillState(sessionInfo.id, 'completed', lastFinishReason as FinishReason)
           } else if (!lastFinishReason) {
             const created = sessionInfo.time.created

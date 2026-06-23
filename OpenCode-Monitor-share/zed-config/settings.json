@@ -1,0 +1,82 @@
+// Zed settings
+//
+// For information on how to configure Zed, see the Zed
+// documentation: https://zed.dev/docs/configuring-zed
+//
+// To see all of Zed's default settings without changing your
+// custom settings, run `zed: open default settings` from the
+// command palette (cmd-shift-p / ctrl-shift-p)
+{
+  "session": {
+    "trust_all_worktrees": true
+  },
+  "language_models": {
+    "openai_compatible": {
+      "MOMO": {
+        "api_url": "https://api.momotale.com/v1",
+        "available_models": [
+          {
+            "name": "[momo]step-3.7-flash",
+            "max_tokens": 256000,
+            "max_output_tokens": 8192,
+            "max_completion_tokens": 8192,
+            "capabilities": {
+              "tools": true,
+              "images": true,
+              "parallel_tool_calls": true,
+              "prompt_cache_key": true,
+              "chat_completions": true,
+              "interleaved_reasoning": false
+            }
+          }
+        ]
+      }
+    }
+  },
+  "icon_theme": {
+    "mode": "dark",
+    "light": "Zed (Default)",
+    "dark": "Zed (Default)"
+  },
+  "base_keymap": "VSCode",
+  "agent_servers": {
+    "OpenCode": {
+      "default_config_options": {
+        "effort": "medium",
+        "model": "MOMO/[金秋红蜜]GLM-5.2"
+      },
+      "type": "custom",
+      "command": "C:/Users/user/AppData/Roaming/npm/opencode.cmd",
+      "args": ["acp"],
+      "env": {},
+    },
+  },
+  "ui_font_size": 16,
+  "buffer_font_size": 15,
+  "theme": {
+    "mode": "dark",
+    "light": "Ayu Light",
+    "dark": "Ayu Dark",
+  },
+  // 右栏布局：文件树 + git + outline 在右 dock，agent 在左 dock
+  "project_panel": {
+    "dock": "left",
+    "default_width": 260,
+    "starts_open": true,
+    "button": true
+  },
+  "git_panel": {
+    "dock": "left",
+    "default_width": 320
+  },
+  "outline_panel": {
+    "dock": "left"
+  },
+  "agent": {
+    "dock": "right",
+    "sidebar_side": "right",
+    "default_width": 640,
+    "flexible": true
+  },
+  "bottom_dock_layout": "contained"
+}

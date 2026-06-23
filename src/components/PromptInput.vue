@@ -336,7 +336,7 @@ function autoResize(event: Event): void {
   font-size: 10px;
   color: var(--success);
   padding: 1px var(--space-6);
-  background: rgba(161, 193, 129, 0.10);
+  background: rgba(170, 217, 76, 0.10);
   border-radius: var(--radius-xs);
   text-transform: lowercase;
 }
