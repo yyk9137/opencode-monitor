@@ -4,10 +4,10 @@
     :src="iconSrc"
     :alt="fileName"
     class="file-icon"
-    width="16"
-    height="16"
+    :width="size"
+    :height="size"
   />
-  <LucideFileIcon v-else :size="16" class="file-icon file-icon--fallback" />
+  <LucideFileIcon v-else :size="size" class="file-icon file-icon--fallback" />
 </template>
 
 <script setup lang="ts">
@@ -16,7 +16,8 @@ import { computed } from 'vue'
 import { FileIcon as LucideFileIcon } from 'lucide-vue-next'
 import { fileIconMap } from '@/assets/icons/file-icon-map'
 
-const props = defineProps<{ fileName: string }>()
+const props = defineProps<{ fileName: string; size?: number }>()
+const size = computed(() => props.size ?? 16)
 
 const iconName = computed(() => {
   const ext = props.fileName.split('.').pop()?.toLowerCase()
@@ -32,8 +33,6 @@ const iconSrc = computed(() =>
 
 <style scoped>
 .file-icon {
-  width: 16px;
-  height: 16px;
   flex-shrink: 0;
   filter: saturate(0.92) brightness(0.96);
   /* Catppuccin mocha icons tuned for #1E1E2E; ayu night surfaces are darker (#0D1017~#141821).

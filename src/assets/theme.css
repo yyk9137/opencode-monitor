@@ -1,25 +1,25 @@
 /* ─── Ayu Night Theme — Design Tokens ─── */
 
 :root {
-  /* 背景层级 */
-  --bg-app:        #0d1017;
-  --bg-editor:     #10141c;
-  --bg-panel:      #141821;
-  --bg-elevated:   #0f131a;
-  --bg-element:    #1b1f29;
-  --bg-hover:      #1b1f29;
-  --bg-active:     #2b3040;
-  --bg-selected:   #2b3040;
+  /* 背景层级 — 对齐 Zed ayu dark 源码 (crates/theme/src/themes/ayu) */
+  --bg-app:        #0d1016;  /* was #0d1017 → Zed editor.background */
+  --bg-editor:     #0d1016;  /* was #10141c → Zed editor.background (统一) */
+  --bg-panel:      #1f2127;  /* was #141821 → Zed surface.background / elevated_surface.background */
+  --bg-elevated:   #1f2127;  /* was #0f131a → Zed elevated_surface.background */
+  --bg-element:    #2d2f34;  /* was #1b1f29 → Zed border.variant / element.hover */
+  --bg-hover:      #2d2f34;  /* was #1b1f29 → Zed element.hover */
+  --bg-active:     #313337;  /* was #2b3040 → Zed background (UI chrome) */
+  --bg-selected:   #313337;  /* was #2b3040 → Zed background */
 
   /* 文字 */
   --text-primary:    #bfbdb6;
-  --text-muted:      #6e7689;
+  --text-muted:      #8a8986;  /* was #6e7689 → Zed text.muted (#8a8986 on #0d1016 ≈ 5.6:1 AA ✓) */
   --text-placeholder: #454d5b;
   --text-accent:     #e6b450;
 
   /* 边框 */
-  --border:          #1b1f29;
-  --border-variant:  #0d1017;
+  --border:          #2d2f34;  /* was #1b1f29 → Zed border.variant (subtle) */
+  --border-variant:  #1f2127;  /* was #0d1017 → Zed border.variant / surface */
   --border-focused:  #e6b450;
 
   /* 语义色 */
