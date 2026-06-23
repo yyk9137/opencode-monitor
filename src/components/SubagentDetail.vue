@@ -12,23 +12,50 @@ import {
 import {
   AlertTriangle,
   ArrowLeft,
+  ArrowLeftRight,
+  Brain,
   CheckCircle2,
   ChevronDown,
   ChevronRight,
+  ChevronUp,
   Circle,
   Clock,
   FileDiff,
+  FileX,
+  Globe,
   Loader2,
+  Pencil,
   Redo2,
+  Search,
   StopCircle,
   Terminal,
   Undo2,
   Workflow,
+  Wrench,
   X,
   XCircle,
 } from 'lucide-vue-next'
+import type { Component } from 'vue'
 import { useSessionStore } from '@/stores/session'
 import { useSessionActions } from '@/composables/useSessionActions'
+
+function toolIcon(tool: string): Component {
+  if (['read','glob','grep','ast_grep_search','aft_outline','aft_zoom','aft_search','aft_inspect'].includes(tool))
+    return Search
+  if (['edit','write','apply_patch','aft_refactor','ast_grep_replace','aft_import'].includes(tool))
+    return Pencil
+  if (['aft_delete'].includes(tool))
+    return FileX
+  if (['aft_move'].includes(tool))
+    return ArrowLeftRight
+  if (['bash','bash_write','bash_status','bash_watch','bash_kill'].includes(tool))
+    return Terminal
+  if (['webfetch'].includes(tool))
+    return Globe
+  if (tool === 'thinking' || tool === 'reasoning')
+    return Brain
+  return Wrench
+}
 import { useSessionMessages } from '@/composables/useSessionMessages'
 import { fetch as httpFetch } from '@tauri-apps/plugin-http'
 import type {
@@ -926,7 +953,7 @@ function toolOutputText(state: ToolPart['state'] | undefined): string {
                   @click="toggleTaskResult(part.id)"
                 >
                   <component
-                    :is="expandedTaskResults.has(part.id) ? ChevronDown : ChevronRight"
+                    :is="expandedTaskResults.has(part.id) ? ChevronUp : ChevronDown"
                     :size="12"
                   />
                   <span class="task-result-summary">{{ taskResultSummary(stripSystemInjections((part as TextPart).text || '')) }}</span>
@@ -939,6 +966,7 @@ function toolOutputText(state: ToolPart['state'] | undefined): string {
               <!-- ─── Tool (non-task) ─────────────────────────── -->
               <div v-else-if="part.type === 'tool' && (part as ToolPart).tool !== 'task'" class="tool-part">
                 <div class="tool-row">
+                  <component :is="toolIcon((part as ToolPart).tool)" :size="12" class="tool-header-icon" />
                   <span class="tool-name">{{ (part as ToolPart).tool || 'tool' }}</span>
                   <span class="tool-state" :data-status="toolStatusKey((part as ToolPart).state?.status)">
                     <Loader2 v-if="(part as ToolPart).state?.status === 'running'" :size="10" class="spin" />
@@ -955,7 +983,7 @@ function toolOutputText(state: ToolPart['state'] | undefined): string {
                     @click="toggleToolBody(part.id)"
                   >
                     <component
-                      :is="expandedToolBodies.has(part.id) ? ChevronDown : ChevronRight"
+                      :is="expandedToolBodies.has(part.id) ? ChevronUp : ChevronDown"
                       :size="11"
                     />
                     {{ expandedToolBodies.has(part.id) ? 'hide' : 'output' }}
@@ -999,7 +1027,7 @@ function toolOutputText(state: ToolPart['state'] | undefined): string {
                   <span class="card-title">{{ taskChildAgent(part as ToolPart) }}</span>
                   <span class="card-expand-toggle" @click.stop="toggleSubtask(part.id)">
                     <component
-                      :is="expandedSubtasks.has(part.id) ? ChevronDown : ChevronRight"
+                      :is="expandedSubtasks.has(part.id) ? ChevronUp : ChevronDown"
                       :size="11"
                     />
                   </span>
@@ -1052,7 +1080,7 @@ function toolOutputText(state: ToolPart['state'] | undefined): string {
                   @click="toggleReasoning(part.id)"
                 >
                   <component
-                    :is="expandedReasoning.has(part.id) ? ChevronDown : ChevronRight"
+                    :is="expandedReasoning.has(part.id) ? ChevronUp : ChevronDown"
                     :size="12"
                   />
                   <span>Thinking {{ reasoningDurationLabel(part as ReasoningPart) }}</span>
@@ -1096,7 +1124,7 @@ function toolOutputText(state: ToolPart['state'] | undefined): string {
                     {{ relativeAge(childLastActivity((part as SubtaskPart).sessionID) ?? activeView?.session.lastEventTime ?? null) }}
                   </span>
                   <component
-                    :is="expandedSubtasks.has(part.id) ? ChevronDown : ChevronRight"
+                    :is="expandedSubtasks.has(part.id) ? ChevronUp : ChevronDown"
                     :size="11"
                     class="card-chevron"
                   />
@@ -2640,5 +2668,11 @@ function toolOutputText(state: ToolPart['state'] | undefined): string {
 @keyframes spin {
   from { transform: rotate(0deg); }
   to   { transform: rotate(360deg); }
+}
+
+.tool-header-icon {
+  flex-shrink: 0;
+  color: var(--text-muted);
+  opacity: 0.7;
 }
 </style>
