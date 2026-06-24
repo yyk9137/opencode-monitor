@@ -13,7 +13,6 @@ import {
   AlertTriangle,
   ArrowLeft,
   ArrowLeftRight,
-  Brain,
   CheckCircle2,
   ChevronDown,
   ChevronRight,
@@ -23,6 +22,7 @@ import {
   FileDiff,
   FileX,
   Globe,
+  Lightbulb,
   Loader2,
   Pencil,
   Redo2,
@@ -37,12 +37,14 @@ import {
 } from 'lucide-vue-next'
 import FileIcon from '@/components/FileIcon.vue'
 import MarkdownContent from '@/components/MarkdownContent.vue'
+import ToolInline from '@/components/ToolInline.vue'
 import DiffViewer from '@/components/DiffViewer.vue'
 import '@/assets/markdown.css'
 import type { Component } from 'vue'
 import { useSessionStore } from '@/stores/session'
 import { useSessionActions } from '@/composables/useSessionActions'
 
+// ─── Tool icon map (Zed-aligned) ─────────────────────────────────────────
 function toolIcon(tool: string): Component {
   if (['read','glob','grep','ast_grep_search','aft_outline','aft_zoom','aft_search','aft_inspect'].includes(tool))
     return Search
@@ -52,12 +54,16 @@ function toolIcon(tool: string): Component {
     return FileX
   if (['aft_move'].includes(tool))
     return ArrowLeftRight
+  // Bash family: Zed render_tool_call_label uses a generic tool/hammer
+  // glyph to mark "this runs on the system". Terminal icon belongs to
+  // a different visual family in Zed and reads out of place here.
   if (['bash','bash_write','bash_status','bash_watch','bash_kill'].includes(tool))
-    return Terminal
+    return Wrench
   if (['webfetch'].includes(tool))
     return Globe
+  // Thinking block: IconName::LightBulb in Zed.
   if (tool === 'thinking' || tool === 'reasoning')
-    return Brain
+    return Lightbulb
   return Wrench
 }
 
@@ -72,19 +78,39 @@ function extractFilePath(_tool: string, input: unknown): string | null {
   if (typeof input !== 'object' || !input) return null
   const obj = input as Record<string, unknown>
   const str = (k: string) => (k in obj && typeof obj[k] === 'string' ? obj[k] as string : null)
-  // read / edit / write / apply_patch / aft_zoom / aft_outline / aft_inspect
   return str('filePath')
-    // grep
     ?? str('path')
-    // glob
     ?? str('pattern')
-    // ast_grep_search / ast_grep_replace (paths array, take first)
     ?? (Array.isArray(obj.paths) && obj.paths.length ? String(obj.paths[0]) : null)
 }
 
-// ── Generate unified diff from edit tool input ───────────────────
-// For edit tools, state.input contains oldString and newString.
-// We generate a simple unified diff to show in the tool body.
+// ── Human-friendly label for a card-tool header ─────────────────────────
+// Edit/write → path. Bash → command tail. Falls back to tool name.
+function toolLabel(part: ToolPart): string {
+  const input = part.state?.input
+  const path = extractFilePath(part.tool, input)
+  if (path) {
+    const segs = path.replace(/^[./\\]+/, '').split(/[\\/]/)
+    return segs.length <= 2 ? path : segs.slice(-2).join('/')
+  }
+  if (part.tool === 'bash' || part.tool.startsWith('bash_')) {
+    if (typeof input === 'object' && input && 'command' in input) {
+      const cmd = (input as Record<string, unknown>).command
+      if (typeof cmd === 'string') {
+        const trimmed = cmd.trim().split('\n')[0]
+        return trimmed.length > 60 ? trimmed.slice(0, 60) + '…' : trimmed
+      }
+    }
+    return 'bash'
+  }
+  if (part.tool === 'webfetch' && typeof input === 'object' && input) {
+    const url = (input as Record<string, unknown>).url
+    if (typeof url === 'string') return url
+  }
+  return part.tool || 'tool'
+}
+
+// ── Generate unified diff from edit tool input ─────────────────────────
 function generateDiffFromInput(_tool: string, input: unknown): string | null {
   if (typeof input !== 'object' || !input) return null
   const obj = input as Record<string, unknown>
@@ -94,7 +120,6 @@ function generateDiffFromInput(_tool: string, input: unknown): string | null {
   const newStr = str('newString')
   if (oldStr === null || newStr === null) return null
 
-  // Simple unified diff generation
   const oldLines = oldStr.split('\n')
   const newLines = newStr.split('\n')
   const maxLen = Math.max(oldLines.length, newLines.length)
@@ -127,11 +152,6 @@ import type {
 
 const store = useSessionStore()
 const { fetchParts } = useSessionMessages()
-// Rebind the composable's reactive state with explicit non-null Ref types.
-// vue-tsc applies a "destructure-might-be-undefined" rule to properties
-// pulled from composables — explicit type annotations here give the
-// template the precise types it needs (Set<string>, FileDiffInfo[]) without
-// forcing `!` assertions at every callsite.
 const sessionActions = useSessionActions()
 const inFlight: Record<string, boolean> = sessionActions.inFlight
 const revertedMessageIds: Ref<Set<string>> = sessionActions.revertedMessageIds as Ref<Set<string>>
@@ -140,13 +160,7 @@ const revert = sessionActions.revert
 const unrevert = sessionActions.unrevert
 const abortSession = sessionActions.abortSession
 const viewDiff = sessionActions.viewDiff
-// `fork` is exposed by the composable and wired into parts-actions in a
-// later iteration; mark consumed so the noUnusedLocals rule stays happy.
 void sessionActions.fork
-
-// ─── Active view: tabs are the only view model ────────────────────────
-// Browser-tab model: there is no separate "selected" concept. The right
-// pane renders whatever `activeTabId` points at, period.
 
 interface ActiveView {
   session: SessionNode
@@ -158,11 +172,6 @@ const activeView = computed<ActiveView | null>(() => {
   if (!tabId) return null
   const node = store.sessions.get(tabId)
   if (!node) return null
-  // Look up tree node for children info. Use the store node directly for
-  // messages (not the tree shallow copy) so that addMessagePart/flushDeltas
-  // updates are reflected in activeView.session.messages and trigger the
-  // displayParts computed. Merge children from the tree into the node so
-  // that template code using activeView.session.children works correctly.
   const treeNode = store.tree.find(n => n.id === tabId)
   return {
     session: treeNode ? { ...node, children: treeNode.children } : node,
@@ -183,8 +192,6 @@ const isCurrentlyStuck = computed<{ elapsed: number } | null>(() => {
   return { elapsed: alert.stuckDuration }
 })
 
-// ─── Child stats (only meaningful in parent view) ──────────────────────
-
 const childStats = computed(() => {
   const view = activeView.value
   if (!view || !view.isParent) return null
@@ -202,24 +209,15 @@ const childStats = computed(() => {
   return { running, completed, error, stuck, total: children.length }
 })
 
-// ─── Body mode: stream (default) | children | diff ────────────────────
-// The right pane has three interchangeable bodies sharing the same vertical
-// slot below the header. `stream` is the part list, `children` is the parent
-// subagent grid (Zed-style), `diff` shows file changes for revert context.
-
 type BodyMode = 'stream' | 'children' | 'diff'
 const bodyMode = ref<BodyMode>('stream')
 
-// Watch for "open child list" signal from SessionTree badge clicks
 watch(
   () => store.showChildListSignal,
   (signal) => {
     if (!signal) return
-    // Signal format: "sessionId:timestamp"
     const sid = signal.split(':')[0]
     if (store.activeTabId === sid) {
-      // Check if this session has children by looking at tree (not sessions map,
-      // which always has children: [])
       const treeNode = store.tree.find(n => n.id === sid)
       if (treeNode && treeNode.children.length > 0) {
         bodyMode.value = 'children'
@@ -228,9 +226,6 @@ watch(
   },
 )
 
-// Auto-reset to stream whenever the active tab changes — opening another tab
-// (e.g. from the sidebar) should not leave the child-list or diff overlay in a
-// stale state pointing at the old parent.
 watch(
   () => store.activeTabId,
   () => { bodyMode.value = 'stream' },
@@ -245,11 +240,7 @@ async function openChildFromList(childId: string): Promise<void> {
   bodyMode.value = 'stream'
 }
 
-// ─── Streaming: scroll behaviour ──────────────────────────────────────
-
 const streamRef = ref<HTMLElement | null>(null)
-
-// ─── Backfill legacy parts when entering a session ────────────────────
 
 const backfilledParts = shallowRef<MessagePart[]>([])
 
@@ -260,8 +251,6 @@ watch(
     if (!newId) return
     const view = activeView.value
     if (!view) return
-    // Always fetch historical parts from legacy API — live SSE parts
-    // only cover activity since monitor started, not before.
     try {
       const fetched = await fetchParts(newId)
       backfilledParts.value = fetched
@@ -272,52 +261,31 @@ watch(
   { immediate: true },
 )
 
-// ─── Display pipeline: merge backfill + live, dedup by part.id ────────
-
 const displayParts = computed<MessagePart[]>(() => {
   const liveParts = activeView.value?.session.messages ?? []
   const seen = new Map<string, MessagePart>()
 
-  // Backfill first (historical, in chronological order from API).
-  // Live parts second: updates overwrite existing entries (Map.set),
-  // new parts are appended at the end (chronologically after backfill).
   for (const p of [...backfilledParts.value, ...liveParts]) {
-    if (!p.id) continue  // defensive: skip malformed parts
+    if (!p.id) continue
     const existing = seen.get(p.id)
     if (!existing) {
       seen.set(p.id, p)
       continue
     }
-    // For text parts, keep the version with more content.
-    // During streaming, the live version grows via deltas and will be
-    // longer than the backfill snapshot.
     if (p.type === 'text' && existing.type === 'text') {
       if (((p as TextPart).text?.length ?? 0) >= ((existing as TextPart).text?.length ?? 0)) {
         seen.set(p.id, p)
       }
     } else {
-      // Non-text parts: live version is always newer (status updates etc.)
       seen.set(p.id, p)
     }
   }
 
   return Array.from(seen.values())
-  // No sort needed — backfill API returns chronological order, and
-  // Map preserves insertion order. Updated entries keep their original
-  // position; new live parts are appended at the end.
 })
-
-// ─── Revert affordances ────────────────────────────────────────────────
-// A user text part is revertable when the session is NOT currently running
-// (revert is rejected with 409 busy otherwise) and the part itself is a
-// non-synthetic text body — synthetic messages (system reminders, agent
-// switches) aren't authored by the user and shouldn't be revertable.
 
 function canRevert(part: MessagePart): boolean {
   if (!activeView.value) return false
-  // Block revert unless we're confident the session is NOT running.
-  // 'unknown' means we couldn't determine state during bootstrap —
-  // the opencode API returns 409 for running sessions, so be defensive.
   const state = activeView.value.session.inferredState
   if (state === 'running' || state === 'unknown') return false
   return part.type === 'text' && !(part as TextPart).synthetic
@@ -328,20 +296,16 @@ async function handleRevert(part: MessagePart): Promise<void> {
   await revert(activeView.value.session.id, part.messageID)
 }
 
-// Hide step-start and step-finish entirely (kept in data for state inference).
-// Also hide synthetic text parts that contain ONLY system injection markers
-// (temporal comments, internal_reminder tags) — these are not user-visible
-// content in Zed and shouldn't appear in the monitor either.
 const visibleParts = computed<MessagePart[]>(() => {
   return displayParts.value.filter(
     (p) =>
       p.type !== 'step-start' &&
       p.type !== 'step-finish' &&
+      p.type !== 'patch' &&
+      p.type !== 'file' &&
       !isSyntheticText(p),
   )
 })
-
-// ─── Auto-stick to bottom while streaming ──────────────────────────────
 
 let stickToBottom = true
 
@@ -365,8 +329,6 @@ onMounted(() => {
   })
 })
 
-// ─── Thinking (reasoning) collapse — Zed reference: thread_view.rs ─────
-
 const expandedReasoning = ref<Set<string>>(new Set())
 const initialReasoningAutoExpand = ref(false)
 
@@ -386,8 +348,6 @@ function toggleReasoning(partId: string): void {
   expandedReasoning.value = next
 }
 
-// ─── Tool output collapse ──────────────────────────────────────────────
-
 const expandedToolBodies = ref<Set<string>>(new Set())
 
 function toggleToolBody(partId: string): void {
@@ -397,8 +357,6 @@ function toggleToolBody(partId: string): void {
   expandedToolBodies.value = next
 }
 
-// ─── Subtask inline card expand ────────────────────────────────────────
-
 const expandedSubtasks = ref<Set<string>>(new Set())
 
 function toggleSubtask(partId: string): void {
@@ -406,7 +364,6 @@ function toggleSubtask(partId: string): void {
   if (next.has(partId)) next.delete(partId)
   else next.add(partId)
   expandedSubtasks.value = next
-  // Fetch child parts on expand if store has none
   const part = displayParts.value.find(p => p.id === partId)
   if (part && next.has(partId)) {
     const sid = (part as SubtaskPart).sessionID ?? taskChildSessionId(part as ToolPart)
@@ -415,8 +372,6 @@ function toggleSubtask(partId: string): void {
     }
   }
 }
-
-// ─── Task result (text parts containing <task> XML) collapse ───────────
 
 const expandedTaskResults = ref<Set<string>>(new Set())
 
@@ -433,20 +388,11 @@ function isTaskResultText(part: MessagePart): boolean {
   return /<task\s+id\s*=/i.test(text) && /state\s*=\s*["'](?:completed|running)["']/i.test(text)
 }
 
-// ─── System injection filtering ─────────────────────────────────────────
-// The magic-context system injects temporal markers (<!-- +7m -->) and
-// internal reminders (<internal_reminder>...</internal_reminder>) into the
-// text stream. These are system-internal and should not be displayed to the
-// user. Zed strips them; the monitor must do the same.
 function stripSystemInjections(text: string): string {
   return text
-    // Remove HTML comments (temporal markers like <!-- +7m -->, <!-- +3d 4h -->)
     .replace(/<!--\s*\+[0-9]+[a-z\s]*-->/gi, '')
-    // Remove <internal_reminder>...</internal_reminder> blocks
     .replace(/<internal_reminder>[\s\S]*?<\/internal_reminder>/gi, '')
-    // Remove <session-history> blocks if present
     .replace(/<session-history>[\s\S]*?<\/session-history>/gi, '')
-    // Clean up excessive blank lines left behind
     .replace(/\n{3,}/g, '\n\n')
     .trim()
 }
@@ -454,21 +400,13 @@ function stripSystemInjections(text: string): string {
 function isSyntheticText(part: MessagePart): boolean {
   if (part.type !== 'text') return false
   const text = (part as TextPart).text || ''
-  // A part is synthetic (system-injected) if it ONLY contains system markers
-  // and no visible content after stripping.
-  // NOTE: Empty text is NOT synthetic — it may be a newly created text part
-  // that hasn't received its first delta yet. Filtering it out would cause
-  // the part to disappear from the DOM until the first delta arrives, then
-  // reappear — which can confuse Vue's v-for key tracking.
   if (text.length === 0) return false
   return stripSystemInjections(text).length === 0
 }
 
 function taskResultSummary(text: string): string {
-  // Extract <summary> content from <task> XML
   const match = text.match(/<summary>(.*?)<\/summary>/s)
   if (match) return match[1].trim()
-  // Fallback: first line of <task_result>
   const resultMatch = text.match(/<task_result>([\s\S]*?)<\/task_result>/)
   if (resultMatch) {
     const firstLine = resultMatch[1].trim().split('\n')[0]
@@ -478,10 +416,8 @@ function taskResultSummary(text: string): string {
 }
 
 function taskResultBody(text: string): string {
-  // Extract <task_result> content
   const match = text.match(/<task_result>([\s\S]*?)<\/task_result>/)
   if (match) return match[1].trim()
-  // Return everything after <summary>
   const summaryEnd = text.indexOf('</summary>')
   if (summaryEnd !== -1) return text.slice(summaryEnd + 10).trim()
   return text
@@ -500,16 +436,10 @@ function openSubtaskTab(part: SubtaskPart): void {
   }
 }
 
-// ─── Task tool → subagent card helpers ────────────────────────────────
-// When the orchestrator calls the `task` tool, OpenCode creates a child session.
-// The tool part's state.metadata.sessionId points to the child session.
-
 function taskChildSessionId(part: ToolPart): string | null {
-  // Try state.metadata.sessionId first
   const meta = part.state?.metadata as Record<string, unknown> | undefined
   const sid = (meta?.sessionId as string) ?? null
   if (sid) return sid
-  // Fallback: extract from output XML (<task id="..." state="..."> or single quotes)
   const output = part.state?.output as string | undefined
   if (output) {
     const match = output.match(/<task\s+id\s*=\s*["']([^"']+)["']/)
@@ -523,13 +453,10 @@ function taskChildState(part: ToolPart): InferredState {
   if (sid) {
     const node = childNode(sid)
     if (node) {
-      // Use the child session's inferred state from the store
       if (node.inferredState === 'running') return 'running'
       if (node.inferredState === 'completed') return 'completed'
       if (node.inferredState === 'error') return 'error'
     }
-    // Check if there's a <task state="completed"> text part for this child
-    // in the current display parts — that means the subagent finished
     for (const p of displayParts.value) {
       if (p.type === 'text') {
         const text = (p as TextPart).text || ''
@@ -544,7 +471,6 @@ function taskChildState(part: ToolPart): InferredState {
       }
     }
   }
-  // Fallback: check the tool part's output XML for state
   const output = part.state?.output as string | undefined
   if (output) {
     const stateMatch = output.match(/state\s*=\s*["'](\w+)["']/)
@@ -554,34 +480,27 @@ function taskChildState(part: ToolPart): InferredState {
       if (stateMatch[1] === 'error') return 'error'
     }
   }
-  // Last resort
   if (part.state?.status === 'error') return 'error'
   return 'running'
 }
 
 function taskChildAgent(part: ToolPart): string {
-  // Check tool input first — this is the most reliable source for subagent_type
-  // because it's set at task creation time and never changes.
   const input = part.state?.input
   if (input && typeof input === 'object' && !Array.isArray(input)) {
     const subagentType = (input as Record<string, unknown>).subagent_type
     if (typeof subagentType === 'string' && subagentType !== 'unknown') return subagentType
   }
-  // Fallback 1: read from tool input metadata (SSE parts)
   const meta = part.state?.metadata as Record<string, unknown> | undefined
   const fromMeta = meta?.subagent_type ?? meta?.subagentType ?? meta?.agent
   if (typeof fromMeta === 'string' && fromMeta !== 'unknown') return fromMeta
-  // Fallback 2: check store for child session, but skip 'unknown' (placeholder)
   const sid = taskChildSessionId(part)
   if (sid) {
     const node = childNode(sid)
     if (node?.agent && node.agent !== 'unknown') return node.agent
   }
-  // Fallback 3: input is a plain string — use first 30 chars as descriptor
   if (typeof input === 'string' && input.length > 0) {
     return input.slice(0, 30).replace(/\s+/g, ' ').trim() || 'subagent'
   }
-  // Fallback 4: extract agent from output XML
   const output = part.state?.output
   if (typeof output === 'string') {
     const agentMatch = output.match(/agent\s*=\s*["']([^"']+)["']/)
@@ -605,10 +524,8 @@ async function openTaskTab(part: ToolPart): Promise<void> {
   }
 }
 
-// ─── Fetch child session parts for card preview ───────────────────────
-
 const fetchedChildParts = shallowRef<Map<string, MessagePart[]>>(new Map())
-const fetchingChildParts = new Set<string>()  // prevent concurrent fetches
+const fetchingChildParts = new Set<string>()
 
 async function fetchChildParts(sessionId: string): Promise<void> {
   if (fetchingChildParts.has(sessionId)) return
@@ -625,9 +542,6 @@ async function fetchChildParts(sessionId: string): Promise<void> {
   }
 }
 
-// Auto-fetch child session parts when task tool parts appear in display.
-// Debounced to avoid running on every delta flush (60fps during streaming).
-// The periodic 3s interval (line ~613) handles running child session updates.
 let childFetchDebounce: ReturnType<typeof setTimeout> | null = null
 watch(displayParts, () => {
   if (childFetchDebounce) clearTimeout(childFetchDebounce)
@@ -637,12 +551,10 @@ watch(displayParts, () => {
         const sid = taskChildSessionId(part as ToolPart)
         if (sid) {
           const childNode = store.sessions.get(sid)
-          // If child session not in store, fetch it from API and add it
           if (!childNode) {
             fetchChildSession(sid)
           }
           const isRunning = !childNode || childNode.inferredState === 'running' || childNode.inferredState === 'unknown'
-          // Fetch if not yet fetched, or if child is still running (to get updates)
           if (!fetchedChildParts.value.has(sid) || isRunning) {
             fetchChildParts(sid)
           }
@@ -652,21 +564,17 @@ watch(displayParts, () => {
   }, 500)
 }, { immediate: true })
 
-// Fetch a child session's info from the API and add it to the store
 const fetchedSessionIds = new Set<string>()
 async function fetchChildSession(sessionId: string): Promise<void> {
   if (fetchedSessionIds.has(sessionId)) return
   if (store.sessions.has(sessionId)) return
   fetchedSessionIds.add(sessionId)
-  // Multi-instance: child sessions belong to the same server as the parent
-  // session whose message stream contains the tool part that referenced them.
   const view = activeView.value
   const url = view?.session.instanceUrl || store.baseUrl
   try {
     const response = await httpFetch(`${url}/api/session/${sessionId}`)
     if (response.ok) {
       const body = await response.json()
-      // API returns { data: SessionV2Info } for single session queries
       const sessionInfo = body.data
       if (sessionInfo && sessionInfo.id === sessionId) {
         store.addSession(sessionInfo, url)
@@ -686,15 +594,12 @@ function stateColor(status: string): string {
   }
 }
 
-// ─── Reactive clock so relative timestamps re-render every second ──────
-
 const now = ref(Date.now())
 let clockInterval: number | null = null
 
 onMounted(() => {
   clockInterval = window.setInterval(() => {
     now.value = Date.now()
-    // Re-fetch running child sessions to get streaming updates
     for (const part of displayParts.value) {
       if (part.type === 'tool' && (part as ToolPart).tool === 'task') {
         const sid = taskChildSessionId(part as ToolPart)
@@ -702,12 +607,12 @@ onMounted(() => {
           const childNode = store.sessions.get(sid)
           const isRunning = !childNode || childNode.inferredState === 'running' || childNode.inferredState === 'unknown'
           if (isRunning) {
-            fetchChildParts(sid)  // fetchChildParts has dedup via fetchingChildParts set
+            fetchChildParts(sid)
           }
         }
       }
     }
-  }, 3000)  // poll every 3 seconds for running children
+  }, 3000)
 })
 
 onBeforeUnmount(() => {
@@ -721,8 +626,6 @@ function relativeAge(timestamp: number | null | undefined): string {
   if (!timestamp) return '—'
   return formatDuration(Math.max(0, now.value - timestamp))
 }
-
-// ─── Display helpers ───────────────────────────────────────────────────
 
 function formatDuration(ms: number): string {
   const totalSeconds = Math.max(0, Math.floor(ms / 1000))
@@ -791,8 +694,6 @@ function tabStatusClass(sessionId: string): string {
   return node.inferredState
 }
 
-// ─── Tab actions ───────────────────────────────────────────────────────
-
 function activateTab(sessionId: string): void {
   store.setActiveTab(sessionId)
 }
@@ -801,8 +702,6 @@ function closeTab(sessionId: string, event: Event): void {
   event.stopPropagation()
   store.closeTab(sessionId)
 }
-
-// ─── Render helpers for tool output (handles string | object | undefined) ─
 
 function toolOutputText(state: ToolPart['state'] | undefined): string {
   if (!state) return ''
@@ -815,11 +714,12 @@ function toolOutputText(state: ToolPart['state'] | undefined): string {
     return String(out)
   }
 }
+
+void toolOutputText // keep template-friendly export
 </script>
 
 <template>
   <section class="detail-pane">
-    <!-- ─── Empty state ────────────────────────────────────────── -->
     <div v-if="!activeView" class="empty-state">
       <div class="empty-frame">
         <Terminal :size="22" class="empty-icon" />
@@ -831,7 +731,6 @@ function toolOutputText(state: ToolPart['state'] | undefined): string {
     </div>
 
     <template v-else>
-      <!-- ─── Tab bar (browser-like) ─────────────────────────── -->
       <nav v-if="store.openTabs.length > 0" class="tab-bar" role="tablist">
         <div
           v-for="tab in store.openTabs"
@@ -859,7 +758,6 @@ function toolOutputText(state: ToolPart['state'] | undefined): string {
         </div>
       </nav>
 
-      <!-- ─── Header strip ─────────────────────────────────────── -->
       <header class="detail-header">
         <div class="header-row">
           <span class="agent-chip">
@@ -881,7 +779,6 @@ function toolOutputText(state: ToolPart['state'] | undefined): string {
             {{ relativeAge(activeView.session.lastEventTime) }}
           </span>
 
-          <!-- ─── Header actions: restore reverses; abort halts running sessions ─── -->
           <div class="header-actions">
             <button
               v-if="revertedMessageIds.size > 0"
@@ -951,17 +848,13 @@ function toolOutputText(state: ToolPart['state'] | undefined): string {
               {{ childStats.stuck }} stuck
             </span>
             <span class="summary-toggle-glyph">
-              <ChevronDown
-                v-if="bodyMode === 'children'"
-                :size="11"
-              />
+              <ChevronDown v-if="bodyMode === 'children'" :size="11" />
               <ChevronRight v-else :size="11" />
             </span>
           </button>
         </div>
       </header>
 
-      <!-- ─── Body: message stream OR child list overlay OR diff ──────── -->
       <div
         v-if="bodyMode === 'stream'"
         ref="streamRef"
@@ -984,10 +877,9 @@ function toolOutputText(state: ToolPart['state'] | undefined): string {
             class="part"
             :data-type="part.type"
           >
-            <span class="part-marker" />
+            <span class="part-rail" :data-part-type="part.type" />
 
             <div class="part-body">
-              <!-- ─── Text ─────────────────────────────────────── -->
               <MarkdownContent
                 v-if="part.type === 'text' && !isTaskResultText(part)"
                 class="text-part"
@@ -996,7 +888,6 @@ function toolOutputText(state: ToolPart['state'] | undefined): string {
                 :text="stripSystemInjections((part as TextPart).text || '')"
               />
 
-              <!-- ─── Task result (text containing <task> XML) ──── -->
               <div
                 v-else-if="part.type === 'text' && isTaskResultText(part)"
                 class="task-result-block"
@@ -1010,7 +901,7 @@ function toolOutputText(state: ToolPart['state'] | undefined): string {
                 >
                   <component
                     :is="expandedTaskResults.has(part.id) ? ChevronUp : ChevronDown"
-                    :size="12"
+                    :size="11"
                   />
                   <span class="task-result-summary">{{ taskResultSummary(stripSystemInjections((part as TextPart).text || '')) }}</span>
                 </button>
@@ -1019,36 +910,78 @@ function toolOutputText(state: ToolPart['state'] | undefined): string {
                 </div>
               </div>
 
-              <!-- ─── Tool (non-task) ─────────────────────────── -->
-              <div v-else-if="part.type === 'tool' && (part as ToolPart).tool !== 'task'" class="tool-part" :class="{ 'tool-part--card': isCardTool((part as ToolPart).tool), 'tool-part--inline': !isCardTool((part as ToolPart).tool) }">
-                <div class="tool-header" :class="{ 'tool-header--card': isCardTool((part as ToolPart).tool) }">
-                  <FileIcon v-if="extractFilePath((part as ToolPart).tool, (part as ToolPart).state?.input)" :file-name="extractFilePath((part as ToolPart).tool, (part as ToolPart).state?.input)!" :size="12" class="tool-header-icon" />
-                  <component v-else :is="toolIcon((part as ToolPart).tool)" :size="12" class="tool-header-icon" />
-                  <span class="tool-name">{{ (part as ToolPart).tool || 'tool' }}</span>
-                  <span class="tool-state" :data-status="toolStatusKey((part as ToolPart).state?.status)">
-                    <Loader2 v-if="(part as ToolPart).state?.status === 'running'" :size="10" class="spin" />
-                    <CheckCircle2 v-else-if="(part as ToolPart).state?.status === 'completed'" :size="10" />
-                    <XCircle v-else-if="(part as ToolPart).state?.status === 'error'" :size="10" />
-                    <Circle v-else :size="10" />
-                    {{ toolStatusText((part as ToolPart).state?.status) }}
+              <ToolInline
+                v-else-if="part.type === 'tool' && (part as ToolPart).tool !== 'task' && !isCardTool((part as ToolPart).tool)"
+                :tool="(part as ToolPart)"
+                :expanded="expandedToolBodies.has(part.id)"
+                @toggle="toggleToolBody(part.id)"
+              >
+                <template #body>
+                  <DiffViewer
+                    v-if="generateDiffFromInput((part as ToolPart).tool, (part as ToolPart).state?.input)"
+                    :content="generateDiffFromInput((part as ToolPart).tool, (part as ToolPart).state?.input)!"
+                  />
+                  <MarkdownContent :text="toolOutputText((part as ToolPart).state)" />
+                </template>
+              </ToolInline>
+
+              <div
+                v-else-if="part.type === 'tool' && (part as ToolPart).tool !== 'task'"
+                class="tool-card"
+                :class="{ 'tool-card--failed': (part as ToolPart).state?.status === 'error' }"
+              >
+                <button
+                  type="button"
+                  class="tool-card__header"
+                  :aria-expanded="expandedToolBodies.has(part.id) ? 'true' : 'false'"
+                  @click="toggleToolBody(part.id)"
+                >
+                  <span class="tool-card__icon">
+                    <FileIcon
+                      v-if="extractFilePath((part as ToolPart).tool, (part as ToolPart).state?.input)"
+                      :file-name="extractFilePath((part as ToolPart).tool, (part as ToolPart).state?.input)!"
+                      :size="13"
+                    />
+                    <component
+                      v-else
+                      :is="toolIcon((part as ToolPart).tool)"
+                      :size="13"
+                    />
                   </span>
-                  <button
-                    v-if="(part as ToolPart).state?.output || (part as ToolPart).state?.error"
-                    type="button"
-                    class="tool-toggle"
-                    :aria-expanded="expandedToolBodies.has(part.id) ? 'true' : 'false'"
-                    @click="toggleToolBody(part.id)"
+                  <span class="tool-card__name">{{ toolLabel(part as ToolPart) }}</span>
+                  <span
+                    class="tool-card__status"
+                    :data-status="toolStatusKey((part as ToolPart).state?.status)"
+                  >
+                    <Loader2
+                      v-if="(part as ToolPart).state?.status === 'running'"
+                      :size="10"
+                      class="spin"
+                    />
+                    <CheckCircle2
+                      v-else-if="(part as ToolPart).state?.status === 'completed'"
+                      :size="10"
+                    />
+                    <XCircle
+                      v-else-if="(part as ToolPart).state?.status === 'error'"
+                      :size="10"
+                    />
+                    <Circle v-else :size="9" />
+                  </span>
+                  <span
+                    v-if="(part as ToolPart).state?.output || (part as ToolPart).state?.error || generateDiffFromInput((part as ToolPart).tool, (part as ToolPart).state?.input)"
+                    class="tool-card__disclosure"
+                    aria-hidden="true"
                   >
                     <component
                       :is="expandedToolBodies.has(part.id) ? ChevronUp : ChevronDown"
                       :size="11"
                     />
-                    {{ expandedToolBodies.has(part.id) ? 'hide' : 'output' }}
-                  </button>
-                </div>
+                  </span>
+                </button>
                 <div
-                  v-if="expandedToolBodies.has(part.id) && ((part as ToolPart).state?.output || (part as ToolPart).state?.error || generateDiffFromInput((part as ToolPart).tool, (part as ToolPart).state?.input))"
-                  class="tool-body"
+                  v-show="expandedToolBodies.has(part.id) && ((part as ToolPart).state?.output || (part as ToolPart).state?.error || generateDiffFromInput((part as ToolPart).tool, (part as ToolPart).state?.input))"
+                  class="tool-card__body"
                 >
                   <DiffViewer
                     v-if="generateDiffFromInput((part as ToolPart).tool, (part as ToolPart).state?.input)"
@@ -1058,7 +991,6 @@ function toolOutputText(state: ToolPart['state'] | undefined): string {
                 </div>
               </div>
 
-              <!-- ─── Task tool → inline subagent card ─────────── -->
               <article
                 v-else-if="part.type === 'tool' && (part as ToolPart).tool === 'task'"
                 class="subagent-card"
@@ -1072,20 +1004,21 @@ function toolOutputText(state: ToolPart['state'] | undefined): string {
                   <span class="card-status">
                     <Loader2
                       v-if="taskChildState(part as ToolPart) === 'running'"
-                      :size="12"
+                      :size="11"
                       class="spin"
                     />
                     <CheckCircle2
                       v-else-if="taskChildState(part as ToolPart) === 'completed'"
-                      :size="12"
+                      :size="11"
                     />
                     <XCircle
                       v-else-if="taskChildState(part as ToolPart) === 'error'"
-                      :size="12"
+                      :size="11"
                     />
-                    <Circle v-else :size="12" />
+                    <Circle v-else :size="10" />
                   </span>
                   <span class="card-title">{{ taskChildAgent(part as ToolPart) }}</span>
+                  <span class="card-time">{{ relativeAge(childLastActivity(taskChildSessionId(part as ToolPart) ?? '') ?? activeView?.session.lastEventTime ?? null) }}</span>
                   <span class="card-expand-toggle" @click.stop="toggleSubtask(part.id)">
                     <component
                       :is="expandedSubtasks.has(part.id) ? ChevronUp : ChevronDown"
@@ -1093,11 +1026,7 @@ function toolOutputText(state: ToolPart['state'] | undefined): string {
                     />
                   </span>
                 </button>
-                <div
-                  v-show="expandedSubtasks.has(part.id)"
-                  class="card-preview"
-                >
-                  <!-- Show child parts if available -->
+                <div v-show="expandedSubtasks.has(part.id)" class="card-preview">
                   <ul v-if="taskChildParts(part as ToolPart).length > 0" class="child-part-list">
                     <li
                       v-for="childPart in taskChildParts(part as ToolPart).slice(-8)"
@@ -1124,15 +1053,11 @@ function toolOutputText(state: ToolPart['state'] | undefined): string {
                       </template>
                     </li>
                   </ul>
-                  <!-- If no child parts, show the task tool's own output (result summary) -->
                   <MarkdownContent v-else-if="toolOutputText((part as ToolPart).state)" class="child-text task-result" :text="toolOutputText((part as ToolPart).state)" />
-                  <p v-else class="child-empty muted small">
-                    No output yet.
-                  </p>
+                  <p v-else class="child-empty muted small">No output yet.</p>
                 </div>
               </article>
 
-              <!-- ─── Reasoning (Zed-style thinking collapse) ────── -->
               <div v-else-if="part.type === 'reasoning'" class="thinking">
                 <button
                   type="button"
@@ -1140,18 +1065,21 @@ function toolOutputText(state: ToolPart['state'] | undefined): string {
                   :aria-expanded="expandedReasoning.has(part.id) ? 'true' : 'false'"
                   @click="toggleReasoning(part.id)"
                 >
+                  <span class="thinking-toggle-left">
+                    <Lightbulb :size="13" class="thinking-toggle-icon" />
+                    <span class="thinking-toggle-label">Thinking {{ reasoningDurationLabel(part as ReasoningPart) }}</span>
+                  </span>
                   <component
                     :is="expandedReasoning.has(part.id) ? ChevronUp : ChevronDown"
                     :size="12"
+                    class="thinking-toggle-disclosure"
                   />
-                  <span>Thinking {{ reasoningDurationLabel(part as ReasoningPart) }}</span>
                 </button>
                 <div v-show="expandedReasoning.has(part.id)" class="thinking-body">
                   <MarkdownContent :text="(part as ReasoningPart).text || ''" />
                 </div>
               </div>
 
-              <!-- ─── Subtask → inline subagent card ────────────── -->
               <article
                 v-else-if="part.type === 'subtask'"
                 class="subagent-card"
@@ -1165,18 +1093,18 @@ function toolOutputText(state: ToolPart['state'] | undefined): string {
                   <span class="card-status">
                     <Loader2
                       v-if="childStateOf((part as SubtaskPart).sessionID) === 'running'"
-                      :size="12"
+                      :size="11"
                       class="spin"
                     />
                     <CheckCircle2
                       v-else-if="childStateOf((part as SubtaskPart).sessionID) === 'completed'"
-                      :size="12"
+                      :size="11"
                     />
                     <XCircle
                       v-else-if="childStateOf((part as SubtaskPart).sessionID) === 'error'"
-                      :size="12"
+                      :size="11"
                     />
-                    <Circle v-else :size="11" />
+                    <Circle v-else :size="10" />
                   </span>
                   <span class="card-title">
                     {{ childAgentOf((part as SubtaskPart).sessionID, (part as SubtaskPart).summary) }}
@@ -1222,11 +1150,9 @@ function toolOutputText(state: ToolPart['state'] | undefined): string {
                 </div>
               </article>
 
-              <!-- ─── Unknown / file / snapshot / etc. — keep visible as faint chip ─ -->
               <span v-else class="generic-chip">{{ part.type }}</span>
             </div>
 
-            <!-- ─── Per-part action bar (revert / view diff) ─────────── -->
             <div
               v-if="canRevert(part)"
               class="part-actions"
@@ -1263,7 +1189,6 @@ function toolOutputText(state: ToolPart['state'] | undefined): string {
         </ol>
       </div>
 
-      <!-- ─── Child-list overlay (parent sessions only) ───────── -->
       <div
         v-else-if="bodyMode === 'children'"
         :id="`child-list-${activeView.session.id}`"
@@ -1319,7 +1244,6 @@ function toolOutputText(state: ToolPart['state'] | undefined): string {
         </div>
       </div>
 
-      <!-- ─── Diff panel: changes from this message (revert context) ─────── -->
       <div
         v-else-if="bodyMode === 'diff'"
         class="tab-body diff-pane"
@@ -1416,7 +1340,7 @@ function toolOutputText(state: ToolPart['state'] | undefined): string {
   border-radius: var(--radius-xs);
 }
 
-/* ─── Tab bar (Zed-style horizontal tabs) ───────────────────────────── */
+/* ─── Tab bar (browser-like) — NOT in scope, kept as-is ────────────── */
 
 .tab-bar {
   height: 32px;
@@ -1515,9 +1439,6 @@ function toolOutputText(state: ToolPart['state'] | undefined): string {
 }
 
 .tab[data-parent='true'] {
-  /* A subdued accent-wash on parent tabs so they read as "containers"
-     of other sessions at a glance — without competing with the active
-     underline. */
   background-image: linear-gradient(
     to right,
     rgba(230, 180, 80, 0.06) 0,
@@ -1735,20 +1656,18 @@ function toolOutputText(state: ToolPart['state'] | undefined): string {
   color: var(--text-muted);
 }
 
-/* ─── Parent subagent stats (clickable — toggles child list) ─────── */
+/* ─── Parent subagent stats (clickable) ─────── */
 
 .parent-summary-wrap {
   margin-top: var(--space-4);
 }
 
 .parent-summary {
-  /* reset button defaults */
   appearance: none;
   background: transparent;
   border: 1px solid var(--border-variant);
   border-radius: var(--radius-sm);
   padding: var(--space-6) var(--space-12);
-  /* layout */
   display: inline-flex;
   align-items: center;
   flex-wrap: wrap;
@@ -1759,7 +1678,6 @@ function toolOutputText(state: ToolPart['state'] | undefined): string {
   cursor: pointer;
   user-select: none;
   text-align: left;
-  /* transition */
   transition:
     background var(--duration-fast) var(--ease-out-quint),
     border-color var(--duration-fast) var(--ease-out-quint),
@@ -1830,11 +1748,8 @@ function toolOutputText(state: ToolPart['state'] | undefined): string {
 .summary-stat[data-tone='warning'] { color: var(--warning); }
 .summary-stat[data-tone='muted']   { color: var(--text-muted); }
 
-/* ─── Child-list overlay (replaces message stream for parents) ────── */
+/* ─── Child-list overlay ────── */
 
-/* Shared body class for the two interchangeable tabs of the right pane.
-   Both the message stream and the child-list panel carry this — its job
-   is to fill the remaining vertical space below the header. */
 .tab-body {
   flex: 1;
   min-height: 0;
@@ -1843,10 +1758,6 @@ function toolOutputText(state: ToolPart['state'] | undefined): string {
 .child-list-pane {
   display: flex;
   flex-direction: column;
-  /* Slide-in entrance: comes from +18px on the right, fades in. Becomes
-     static once mounted. Uses will-change to keep paint cheap on the
-     entrance frame. The animation is short (200ms) so it reads as
-     "appear" rather than "travel". */
   animation: child-list-slide var(--duration-slow) var(--ease-out-quint);
   will-change: transform, opacity;
 }
@@ -2027,13 +1938,19 @@ function toolOutputText(state: ToolPart['state'] | undefined): string {
   50%      { box-shadow: 0 0 0 6px rgba(230, 180, 80, 0.06); }
 }
 
-/* ─── Message stream ────────────────────────────────────────────────── */
+/* ─── Message stream — Zed conversation rhythm ───────────────────────────
+   The message stream is the focal point of the visual fidelity pass. Gone
+   is the bubble/panel look; in its place is a flowing Zed-style agent chat
+   where prose, tools, thinking, and subagent cards share one vertical
+   rhythm with a thin left rail for visual skimming. */
 
 .message-stream {
   flex: 1;
   overflow-y: auto;
-  padding: var(--space-12) var(--space-24) var(--space-24);
+  overflow-x: hidden;
+  padding: 14px var(--space-24) 32px;
   user-select: text;
+  scrollbar-gutter: stable;
 }
 
 .stream-empty {
@@ -2050,47 +1967,99 @@ function toolOutputText(state: ToolPart['state'] | undefined): string {
   padding: 0;
   display: flex;
   flex-direction: column;
-  gap: var(--space-2);
+  gap: var(--part-vertical-rhythm);   /* 2px — Zed tight stack rhythm */
 }
 
 .part {
   display: grid;
-  grid-template-columns: 18px 1fr;
-  gap: var(--space-8);
-  padding: var(--space-2) 0;
+  grid-template-columns: 14px 1fr;
+  gap: 10px;
+  padding: 0;
   min-width: 0;
+  position: relative;
 }
 
-.part-marker {
-  width: 6px;
-  height: 6px;
-  margin-top: 10px;
-  border-radius: 50%;
-  background: var(--text-placeholder);
-  justify-self: center;
-  opacity: 0.5;
+/* ─── Left rail — Zed-style icon column with per-type alignment ─────────
+   Robust approach: rail container height matches each part type's
+   actual first-line element height, and the visible strip is centered
+   within it via ::after pseudo-element. No fragile pixel math. */
+.part-rail {
+  width: 2px;
+  display: block;
+  margin-top: 0;
+  justify-self: end;
+  align-self: start;
+  background: transparent;
+  position: relative;
+  opacity: 0.55;
+  transition: opacity var(--duration-fast) var(--ease-out-quint);
 }
 
-.part[data-type='text'] .part-marker { background: var(--info); }
-.part[data-type='tool'] .part-marker { background: var(--success); }
-.part[data-type='reasoning'] .part-marker { background: rgba(141, 147, 158, 0.6); }
-.part[data-type='subtask'] .part-marker { background: var(--text-accent); }
+/* Visible strip — centered within the rail container */
+.part-rail::after {
+  content: '';
+  position: absolute;
+  top: 50%;
+  left: 0;
+  transform: translateY(-50%);
+  width: 2px;
+  height: 14px;
+  border-radius: 1px;
+  background: var(--info);
+}
+
+.part:hover .part-rail { opacity: 1; }
+
+/* Per-type rail heights — match the actual first-line element height
+   of each part type so the centered strip sits on the first-line center. */
+.part[data-type='text'] .part-rail {
+  height: calc(14px * 1.3);     /* markdown-content > p line-height */
+}
+.part[data-type='text'] .part-rail::after {
+  background: var(--info);
+  box-shadow: 0 0 4px rgba(89, 194, 255, 0.30);
+}
+
+.part[data-type='reasoning'] .part-rail {
+  height: 18px;                 /* thinking-toggle height */
+}
+.part[data-type='reasoning'] .part-rail::after {
+  background: rgba(141, 147, 158, 0.9);
+  box-shadow: 0 0 4px rgba(141, 147, 158, 0.20);
+}
+
+.part[data-type='tool'] .part-rail {
+  height: 22px;                 /* tool-header row height */
+}
+.part[data-type='tool'] .part-rail::after {
+  background: var(--success);
+  box-shadow: 0 0 4px rgba(112, 191, 86, 0.30);
+}
+
+.part[data-type='subtask'] .part-rail {
+  height: 28px;                 /* subagent header height */
+}
+.part[data-type='subtask'] .part-rail::after {
+  background: var(--text-accent);
+  box-shadow: 0 0 4px rgba(230, 180, 80, 0.30);
+}
 
 .part-body {
   min-width: 0;
 }
 
-/* ─── Text part ─────────────────────────────────────────────────────── */
+/* ─── Text part — Zed markdown document, NOT a chat bubble ───────────── */
 
 .text-part {
-  font-size: var(--font-size-code);
+  font-family: var(--font-ui);
+  font-size: 14px;
   line-height: 1.55;
   color: var(--text-primary);
   word-break: break-word;
   margin: 0;
-  padding: var(--space-6) var(--space-12);
-  border-radius: var(--radius-sm);
-  background: var(--bg-panel);
+  padding: 0;
+  background: transparent;
+  border-radius: 0;
   user-select: text;
 }
 
@@ -2099,7 +2068,7 @@ function toolOutputText(state: ToolPart['state'] | undefined): string {
   font-style: italic;
 }
 
-/* ─── Task result block (collapsible <task> XML) ─────────────────────── */
+/* ─── Task result block ─────────────────────────── */
 
 .task-result-block {
   background: var(--bg-panel);
@@ -2136,160 +2105,213 @@ function toolOutputText(state: ToolPart['state'] | undefined): string {
 }
 
 .task-result-body {
-  padding: var(--space-4) var(--space-12);
+  padding: var(--space-8);
   border-top: 1px solid var(--border-variant);
-}
-
-.task-result-body pre {
-  font-family: var(--font-mono);
-  font-size: var(--font-size-code);
-  line-height: 1.55;
-  color: var(--text-primary);
-  white-space: pre-wrap;
-  word-break: break-word;
-  margin: 0;
-  user-select: text;
   max-height: 400px;
   overflow-y: auto;
 }
 
-.task-result-block[data-state='completed'] .task-result-toggle {
-  color: var(--success);
-}
+.task-result-block[data-state='completed'] .task-result-toggle { color: var(--success); }
+.task-result-block[data-state='error']     .task-result-toggle { color: var(--error); }
+.task-result-block[data-state='running']   .task-result-toggle { color: var(--info); }
 
-.task-result-block[data-state='error'] .task-result-toggle {
-  color: var(--error);
-}
+/* ─── Tool CARD — Zed render_tool_call with use_card_layout = true ────────
+   edit, write, apply_patch, aft_refactor, ast_grep_replace, aft_import,
+   aft_delete, aft_move, bash family.
 
-.task-result-block[data-state='running'] .task-result-toggle {
-  color: var(--info);
-}
+   Header: element.bg + 1px subtle border + 4/8px padding (Zed p_2()),
+   6px icon-label gap (Zed gap_1p5()), 22px row height, rounded. */
 
-/* ─── Tool part ─────────────────────────────────────────────────────── */
-
-.tool-part {
-  background: var(--bg-panel);
-  border: 1px solid var(--border-variant);
-  border-radius: var(--radius-sm);
+.tool-card {
+  margin: 4px 0;
+  border: 1px solid var(--tool-outline-soft);
+  border-radius: var(--radius-md);
+  background: var(--bg-editor);
   overflow: hidden;
+  transition: border-color var(--duration-fast) var(--ease-out-quint);
 }
 
-.tool-row {
+.tool-card:hover {
+  border-color: var(--border);
+}
+
+.tool-card--failed {
+  border-style: dashed;
+  border-color: rgba(217, 87, 87, 0.40);
+}
+
+.tool-card__header {
   display: flex;
   align-items: center;
-  gap: var(--space-8);
-  padding: var(--space-8) var(--space-12);
-  flex-wrap: wrap;
-}
-
-.tool-name {
+  gap: var(--tool-gap);
+  width: 100%;
+  min-height: var(--tool-row-height);
+  padding: var(--tool-header-pad-y) var(--tool-header-pad-x);
+  background: var(--tool-card-bg);
+  border: none;
+  border-radius: 0;
   font-family: var(--font-mono);
   font-size: var(--font-size-code);
   color: var(--text-primary);
-  font-weight: 500;
-}
-
-.tool-state {
-  display: inline-flex;
-  align-items: center;
-  gap: var(--space-4);
-  padding: 1px var(--space-6);
-  font-family: var(--font-mono);
-  font-size: 10px;
-  border-radius: var(--radius-xs);
-  background: var(--bg-element);
-  text-transform: lowercase;
-}
-
-.tool-state[data-status='pending']   { color: var(--warning); }
-.tool-state[data-status='running']   { color: var(--info); }
-.tool-state[data-status='completed'] { color: var(--success); }
-.tool-state[data-status='error']     { color: var(--error); }
-
-.spin {
-  animation: spin 1s linear infinite;
-}
-
-.tool-toggle {
-  margin-left: auto;
-  background: transparent;
-  border: none;
-  color: var(--text-placeholder);
-  font-family: var(--font-ui);
-  font-size: 11px;
+  text-align: left;
   cursor: pointer;
+  user-select: none;
+  transition: background var(--duration-fast) var(--ease-out-quint);
+}
+
+.tool-card__header:hover {
+  background: var(--bg-hover);
+}
+
+.tool-card__header:focus-visible {
+  outline: none;
+  background: var(--bg-hover);
+  box-shadow: inset 0 0 0 1px var(--border-focused);
+}
+
+.tool-card__icon {
   display: inline-flex;
   align-items: center;
-  gap: 4px;
-  padding: 2px var(--space-4);
-  border-radius: var(--radius-xs);
-  transition: background var(--duration-fast) var(--ease-out-quint);
-  user-select: none;
+  justify-content: center;
+  width: 14px;
+  color: var(--text-muted);
+  flex-shrink: 0;
+  opacity: 0.85;
 }
 
-.tool-toggle:hover {
-  background: var(--bg-hover);
+.tool-card__name {
+  font-family: var(--font-mono);
+  font-size: var(--font-size-code);
   color: var(--text-primary);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  min-width: 0;
+  flex: 1;
 }
 
-.tool-body {
-  padding: var(--space-8) var(--space-12);
+.tool-card__status {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+  color: var(--text-muted);
+  opacity: 0.9;
+}
+
+.tool-card__status[data-status='pending']   { color: var(--warning); }
+.tool-card__status[data-status='running']   { color: var(--info); }
+.tool-card__status[data-status='completed'] { color: var(--success); }
+.tool-card__status[data-status='error']     { color: var(--error); }
+
+.tool-card__disclosure {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--text-muted);
+  flex-shrink: 0;
+  opacity: var(--tool-disclosure-opacity);
+  transition: opacity var(--duration-fast) var(--ease-out-quint);
+}
+
+.tool-card__header:hover .tool-card__disclosure { opacity: 1; }
+
+/* Card body — full-bleed under header. DiffViewer drops its per-hunk
+   border inside the card (the card border is already framing it). */
+.tool-card__body {
+  padding: 0;
   background: var(--bg-editor);
   border-top: 1px solid var(--border-variant);
-}
-
-.tool-body pre {
-  margin: 0;
-  font-family: var(--font-mono);
-  font-size: var(--font-size-code);
-  color: var(--text-muted);
-  white-space: pre-wrap;
-  word-break: break-word;
   user-select: text;
 }
 
-/* ─── Thinking Block (Zed-aligned) ─── */
+.tool-card__body :deep(.markdown-content) {
+  font-size: var(--font-size-code);
+  padding: 8px 10px;
+}
+
+.tool-card__body :deep(.markdown-content > *) {
+  margin-bottom: 4px;
+}
+
+.tool-card__body :deep(.diff-hunk) {
+  margin: 0;
+  border-radius: 0;
+}
+
+.tool-card__body :deep(.diff-hunk:not(:last-child)) {
+  border-bottom: 1px solid var(--border-variant);
+}
+
+.tool-card__body :deep(.diff-hunk-header) {
+  background: var(--bg-app);
+  font-size: 11px;
+}
+
+/* ─── Thinking block — Zed render_thinking_block ───────────────── */
 
 .thinking {
   display: flex;
   flex-direction: column;
   gap: 4px;
+  margin: 2px 0;
 }
 
 .thinking-toggle {
   display: flex;
   align-items: center;
   justify-content: space-between;
+  gap: var(--tool-gap);
   width: 100%;
-  height: 18px;
-  padding-right: 4px;
-  position: relative;
-  cursor: pointer;
-  background: none;
+  height: 22px;
+  padding: 0 4px 0 0;
+  background: transparent;
   border: none;
+  cursor: pointer;
+  font-family: var(--font-mono);
+  color: var(--text-muted);
+  transition: color var(--duration-fast) var(--ease-out-quint);
+}
+
+.thinking-toggle:hover {
+  color: var(--text-primary);
 }
 
 .thinking-toggle-left {
   display: flex;
   align-items: center;
   gap: 6px;
+  min-width: 0;
+  white-space: nowrap;
   overflow: hidden;
+  text-overflow: ellipsis;
 }
 
 .thinking-toggle-icon {
-  color: var(--text-muted);
+  color: var(--text-accent);
   flex-shrink: 0;
+  opacity: 0.9;
 }
 
 .thinking-toggle-label {
   font-size: 13px;
   color: var(--text-muted);
+  font-family: var(--font-mono);
+  font-weight: 400;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.thinking-toggle:hover .thinking-toggle-label {
+  color: var(--text-primary);
 }
 
 .thinking-toggle-disclosure {
-  opacity: 0;
-  transition: opacity 150ms var(--ease-out-quint);
+  opacity: var(--tool-disclosure-opacity);
+  transition: opacity var(--duration-fast) var(--ease-out-quint);
   color: var(--text-muted);
+  flex-shrink: 0;
 }
 
 .thinking-toggle:hover .thinking-toggle-disclosure {
@@ -2298,31 +2320,41 @@ function toolOutputText(state: ToolPart['state'] | undefined): string {
 
 .thinking-body {
   margin-left: 6px;
-  padding-left: 14px;
-  padding-top: 8px;
-  border-left: 1px solid var(--border);
-  max-height: 256px;
-  overflow: hidden;
+  padding: var(--thinking-body-pad-top) 0 var(--space-8) var(--thinking-body-pad-left);
+  border-left: var(--thinking-border-left);
+  max-height: 384px;
+  overflow: auto;
   position: relative;
 }
 
-/* Zed-style bottom gradient mask — fades into panel bg */
 .thinking-body::after {
   content: '';
-  position: absolute;
-  inset: auto 0 0 0;
-  height: 32px;
+  display: block;
+  height: 24px;
+  margin-top: -24px;
   background: linear-gradient(
     180deg,
-    rgb(20 24 33 / 0) 0%,
-    rgb(20 24 33 / 0.85) 100%
+    rgb(13 16 22 / 0) 0%,
+    rgb(13 16 22 / 0.85) 100%
   );
   pointer-events: none;
+}
+
+.thinking-body :deep(.markdown-content) {
+  font-size: 13px;
+  line-height: 1.5;
+  color: var(--text-muted);
+  padding-top: 0;
+}
+
+.thinking-body :deep(.markdown-content > *) {
+  margin-bottom: 4px;
 }
 
 /* ─── Inline subagent card (Zed pattern) ────────────────────────────── */
 
 .subagent-card {
+  margin: 4px 0;
   border: 1px solid var(--border-variant);
   border-radius: var(--radius-md);
   overflow: hidden;
@@ -2344,17 +2376,17 @@ function toolOutputText(state: ToolPart['state'] | undefined): string {
 
 .card-header {
   display: grid;
-  grid-template-columns: 16px 1fr auto;
+  grid-template-columns: 12px minmax(0, 1fr) auto auto;
   align-items: center;
-  gap: var(--space-8);
+  gap: var(--tool-gap);
   width: 100%;
-  height: 32px;
-  padding: 0 var(--space-12);
+  height: 28px;
+  padding: 0 10px;
   background: var(--bg-element);
   border: none;
   border-bottom: 1px solid var(--border-variant);
-  font-family: var(--font-ui);
-  font-size: var(--font-size-small);
+  font-family: var(--font-mono);
+  font-size: 11px;
   color: var(--text-primary);
   text-align: left;
   cursor: pointer;
@@ -2390,9 +2422,9 @@ function toolOutputText(state: ToolPart['state'] | undefined): string {
   color: var(--text-muted);
 }
 
-.subagent-card[data-state='running'] .card-status { color: var(--success); }
-.subagent-card[data-state='completed'] .card-status { color: var(--success); }
-.subagent-card[data-state='error'] .card-status { color: var(--error); }
+.subagent-card[data-state='running'] .card-status    { color: var(--success); }
+.subagent-card[data-state='completed'] .card-status  { color: var(--success); }
+.subagent-card[data-state='error'] .card-status      { color: var(--error); }
 
 .card-title {
   font-weight: 500;
@@ -2402,6 +2434,7 @@ function toolOutputText(state: ToolPart['state'] | undefined): string {
   overflow: hidden;
   text-overflow: ellipsis;
   color: var(--text-primary);
+  letter-spacing: 0.02em;
 }
 
 .card-time {
@@ -2420,7 +2453,7 @@ function toolOutputText(state: ToolPart['state'] | undefined): string {
 
 .card-preview {
   background: var(--bg-editor);
-  max-height: 220px;
+  max-height: 280px;
   overflow-y: auto;
   padding: var(--space-8) var(--space-12);
   user-select: text;
@@ -2446,23 +2479,13 @@ function toolOutputText(state: ToolPart['state'] | undefined): string {
   color: var(--text-muted);
 }
 
-.preview-item[data-type='text'] { border-left-color: rgba(89, 194, 255, 0.35); color: var(--text-muted); }
-.preview-item[data-type='tool'] { border-left-color: rgba(112, 191, 86, 0.30); color: var(--text-muted); }
+.preview-item[data-type='text']      { border-left-color: rgba(89, 194, 255, 0.35); }
+.preview-item[data-type='tool']      { border-left-color: rgba(112, 191, 86, 0.30); }
 .preview-item[data-type='reasoning'] { border-left-color: rgba(141, 147, 158, 0.40); color: var(--text-placeholder); }
 
-.preview-text {
-  display: block;
-}
-
-.preview-tool {
-  display: inline-flex;
-  align-items: center;
-  gap: var(--space-6);
-}
-
-.preview-tool-name {
-  color: var(--text-primary);
-}
+.preview-text { display: block; }
+.preview-tool { display: inline-flex; align-items: center; gap: var(--space-6); }
+.preview-tool-name { color: var(--text-primary); }
 
 .preview-tool-status {
   font-size: 10px;
@@ -2489,7 +2512,39 @@ function toolOutputText(state: ToolPart['state'] | undefined): string {
   margin: 0;
 }
 
-/* ─── Generic chip (unhandled part types) ───────────────────────────── */
+.child-part-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-4);
+}
+
+.child-part {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  line-height: 1.45;
+  padding-left: var(--space-8);
+  border-left: 2px solid var(--border-variant);
+  white-space: pre-wrap;
+  word-break: break-word;
+  color: var(--text-muted);
+}
+
+.child-part[data-type='text']      { border-left-color: rgba(89, 194, 255, 0.35); }
+.child-part[data-type='tool']      { border-left-color: rgba(112, 191, 86, 0.30); }
+.child-part[data-type='reasoning'] { border-left-color: rgba(141, 147, 158, 0.40); }
+
+.child-text { display: block; }
+.child-tool { display: inline-flex; align-items: center; gap: var(--space-6); }
+.child-tool-name { color: var(--text-primary); }
+.child-tool-state { font-size: 10px; }
+.child-other { font-style: italic; color: var(--text-placeholder); }
+.child-empty { font-size: var(--font-size-small); color: var(--text-placeholder); margin: 0; }
+.task-result { font-size: var(--font-size-code); }
+
+/* ─── Generic chip ───────────────────────────── */
 
 .generic-chip {
   display: inline-flex;
@@ -2505,10 +2560,7 @@ function toolOutputText(state: ToolPart['state'] | undefined): string {
   user-select: none;
 }
 
-/* ─── Header actions (undo / abort) ─────────────────────────────────────── */
-/* Right-aligned action cluster in the detail-header. Sits flush to the right
-   edge, just past the duration span. Border-left creates a visual divider
-   between the session metadata and the action affordances. */
+/* ─── Header actions ───────────────────────────────────── */
 
 .header-actions {
   margin-left: auto;
@@ -2553,17 +2605,12 @@ function toolOutputText(state: ToolPart['state'] | undefined): string {
   color: var(--error);
 }
 
-/* ─── Per-part action bar (revert / diff) ─────────────────────────────────- */
-/* Anchored to the .part li on hover. Hidden by default and translated 1px
-   up to read as "appearing into view" on hover/focus. Provides a single
-   locus for typing-related affordances (revert, view changes). */
-
-.part { position: relative; }
+/* ─── Per-part action bar (revert / view diff) ───────────────────── */
 
 .part-actions {
   position: absolute;
-  top: 4px;
-  right: 4px;
+  top: 0;
+  right: 0;
   display: flex;
   gap: 2px;
   opacity: 0;
@@ -2572,6 +2619,10 @@ function toolOutputText(state: ToolPart['state'] | undefined): string {
   transition:
     opacity var(--duration-fast) var(--ease-out-quint),
     transform var(--duration-fast) var(--ease-out-quint);
+  background: rgba(13, 16, 22, 0.85);
+  border-radius: var(--radius-xs);
+  padding: 2px;
+  border: 1px solid var(--border-variant);
 }
 
 .part:hover .part-actions,
@@ -2587,7 +2638,7 @@ function toolOutputText(state: ToolPart['state'] | undefined): string {
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  background: var(--bg-panel);
+  background: transparent;
   border: 1px solid transparent;
   border-radius: var(--radius-xs);
   color: var(--text-muted);
@@ -2623,10 +2674,7 @@ function toolOutputText(state: ToolPart['state'] | undefined): string {
   border-color: rgba(230, 180, 80, 0.45);
 }
 
-/* ─── Ghost state for reverted messages ──────────────────────────────────── */
-/* Strikethrough + dimmed text read as "this message has been undone" without
-   hiding it entirely. Keeping it visible preserves the user's historical
-   context — they can still see what was asked, just struck out. */
+/* ─── Reverted ghost state ─────────────────────────── */
 
 .text-part--reverted {
   text-decoration: line-through;
@@ -2634,10 +2682,7 @@ function toolOutputText(state: ToolPart['state'] | undefined): string {
   opacity: 0.6;
 }
 
-/* ─── Diff panel (third body mode) ─────────────────────────────────────── */
-/* Reuses the .tab-body scaffold used by the message stream and child list.
-   The slide-in animation is shared so transitions feel consistent across
-   body switches. */
+/* ─── Diff panel ─────────────────────────────────────── */
 
 .diff-pane {
   display: flex;
@@ -2655,9 +2700,6 @@ function toolOutputText(state: ToolPart['state'] | undefined): string {
   flex-shrink: 0;
 }
 
-/* Diff-pane-scoped back-to-messages: borderless variant. The child-list
-   version uses a bordered button; we keep that styling there by scoping
-   the borderless rule to .diff-pane (higher specificity). */
 .diff-pane .back-to-messages {
   display: inline-flex;
   align-items: center;
@@ -2725,7 +2767,7 @@ function toolOutputText(state: ToolPart['state'] | undefined): string {
 
 .diff-status[data-status='added']    { background: var(--vc-added, #7fd962); }
 .diff-status[data-status='modified'] { background: var(--vc-modified, #ffb454); }
-.diff-status[data-status='deleted']  { background: var(--vc-deleted, #e26b73); }
+.diff-status[data-status='deleted']  { background: var(--vc-deleted, #f26d78); }
 .diff-status[data-status='renamed']  { background: var(--info, #59c2ff); }
 
 .diff-path {
@@ -2752,95 +2794,7 @@ function toolOutputText(state: ToolPart['state'] | undefined): string {
   to   { transform: rotate(360deg); }
 }
 
-.tool-header-icon {
-  flex-shrink: 0;
-  color: var(--text-muted);
-  opacity: 0.7;
-}
-
-/* ─── Tool Call Card/Inline Layout (Zed-aligned) ─── */
-
-.tool-part {
-  margin: 6px 0;
-}
-
-.tool-part--card {
-  border: 1px solid var(--border);
-  border-radius: 6px;
-  background: var(--bg-editor);
-  overflow: hidden;
-}
-
-.tool-part--card.tool-part--failed {
-  border-style: dashed;
-}
-
-.tool-part--inline {
-  margin: 4px 0;
-}
-
-.tool-header {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  position: relative;
-  width: 100%;
-}
-
-.tool-header--card {
-  padding: 2px;
-  border-radius: 5px 5px 0 0;
-  background: var(--bg-element);
-}
-
-.tool-header-left {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  height: 18px;
-  font-size: 13px;
-  overflow: hidden;
-}
-
-.tool-header-icon {
-  color: var(--text-muted);
-  flex-shrink: 0;
-}
-
-.tool-header-name {
-  font-family: var(--font-mono);
-  font-size: 13px;
-  color: var(--text-muted);
-}
-
-.tool-header-gradient {
-  position: absolute;
-  top: 0;
-  right: 0;
-  width: 48px;
-  height: 100%;
-  background: linear-gradient(
-    90deg,
-    transparent 0%,
-    var(--bg-element) 100%
-  );
-  pointer-events: none;
-}
-
-.tool-disclosure {
-  opacity: 0;
-  transition: opacity 150ms var(--ease-out-quint);
-  color: var(--text-muted);
-}
-
-.tool-header:hover .tool-disclosure {
-  opacity: 1;
-}
-
-.tool-body {
-  margin-left: 6px;
-  padding: 8px 14px;
-  border-left: 1px solid var(--border);
-  border-top: 1px solid var(--border);
+.spin {
+  animation: spin 1s linear infinite;
 }
 </style>

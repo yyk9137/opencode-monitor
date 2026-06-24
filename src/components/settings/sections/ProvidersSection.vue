@@ -1,87 +1,63 @@
 <script setup lang="ts">
-import { ref, onMounted, computed } from 'vue'
-import { fetch } from '@tauri-apps/plugin-http'
+import { computed, ref } from 'vue'
+import { ChevronDown, ChevronRight, Plus, Trash2, Eye, EyeOff } from 'lucide-vue-next'
 import { useConfigStore } from '@/stores/config'
-import { AlertCircle, Loader2 } from 'lucide-vue-next'
+import TagInput from '../TagInput.vue'
+import JsonEditor from '../JsonEditor.vue'
 
 const configStore = useConfigStore()
+const expanded = ref<string | null>(null)
+const showAddForm = ref(false)
+const newId = ref('')
+const showApiKey = ref<Set<string>>(new Set())
 
-interface ProviderModel { id: string; name?: string }
-interface ProviderInfo { id: string; name?: string; models?: ProviderModel[] }
-interface ProviderResponse { all: ProviderInfo[]; connected: string[] }
-
-const providers = ref<ProviderInfo[]>([])
-const connected = ref<string[]>([])
-const loading = ref(false)
-const error = ref('')
-
-// Merge /provider all with disabled_providers from config
-const providerRows = computed(() => {
-  const disabled = new Set(configStore.draft?.disabled_providers ?? [])
-  const enabled = configStore.draft?.enabled_providers
-
-  const rows: { id: string; name: string; modelCount: number; isOn: boolean; authed: boolean }[] = []
-
-  // From /provider response
-  for (const p of providers.value) {
-    const isDisabled = disabled.has(p.id)
-    const isEnabled = enabled ? enabled.includes(p.id) : true
-    rows.push({
-      id: p.id,
-      name: p.name || p.id,
-      modelCount: p.models?.length ?? 0,
-      isOn: isEnabled && !isDisabled,
-      authed: connected.value.includes(p.id),
-    })
-  }
-
-  // Add disabled providers not in /provider response (they vanished after disable)
-  for (const id of disabled) {
-    if (!rows.find(r => r.id === id)) {
-      rows.push({ id, name: id, modelCount: 0, isOn: false, authed: false })
-    }
-  }
-
-  return rows
+const providers = computed(() => {
+  return Object.entries(configStore.draft?.provider ?? {}).map(([id, config]) => ({ id, config }))
 })
 
-async function loadProviders() {
-  if (!configStore.targetUrl) return
-  loading.value = true
-  error.value = ''
-  try {
-    const resp = await fetch(`${configStore.targetUrl}/provider`)
-    if (!resp.ok) { error.value = `GET /provider failed: ${resp.status}`; return }
-    const data = (await resp.json()) as ProviderResponse
-    providers.value = data.all || []
-    connected.value = data.connected || []
-  } catch (e) {
-    error.value = String(e)
-  } finally {
-    loading.value = false
-  }
+function toggleExpand(id: string) {
+  expanded.value = expanded.value === id ? null : id
 }
 
-onMounted(loadProviders)
+function updateProvider(id: string, field: string, value: unknown) {
+  if (!configStore.draft?.provider?.[id]) return
+  ;(configStore.draft.provider[id] as Record<string, unknown>)[field] = value
+  configStore.dirtyPaths.add(`provider.${id}.${field}`)
+}
 
-function toggleProvider(id: string, on: boolean) {
-  if (!configStore.draft) return
-  const draft = configStore.draft
-  const disabled = new Set(draft.disabled_providers ?? [])
-  const enabled = new Set(draft.enabled_providers ?? [])
-
-  if (on) {
-    disabled.delete(id)
-    enabled.add(id)
+function updateOptions(id: string, key: string, value: unknown) {
+  const opts = { ...(configStore.draft?.provider?.[id].options ?? {}) }
+  if (value === '' || value === undefined || value === null) {
+    delete (opts as Record<string, unknown>)[key]
   } else {
-    disabled.add(id)
-    enabled.delete(id)
+    ;(opts as Record<string, unknown>)[key] = value
   }
+  updateProvider(id, 'options', opts)
+}
 
-  draft.disabled_providers = Array.from(disabled)
-  draft.enabled_providers = Array.from(enabled)
-  configStore.dirtyPaths.add('disabled_providers')
-  configStore.dirtyPaths.add('enabled_providers')
+function toggleApiKeyVisibility(id: string) {
+  if (showApiKey.value.has(id)) showApiKey.value.delete(id)
+  else showApiKey.value.add(id)
+}
+
+function addProvider() {
+  const id = newId.value.trim()
+  if (!id || !configStore.draft) return
+  if (!configStore.draft.provider) configStore.draft.provider = {}
+  if (configStore.draft.provider[id]) return // already exists
+  configStore.draft.provider[id] = { options: {} }
+  configStore.dirtyPaths.add(`provider.${id}`)
+  newId.value = ''
+  showAddForm.value = false
+  expanded.value = id
+}
+
+function softDeleteProvider(id: string) {
+  // Deep-merge can't delete map keys — remove from draft locally but note limitation
+  if (!configStore.draft?.provider) return
+  // Can't truly delete via PATCH; best we can do is set to empty
+  configStore.draft.provider[id] = {}
+  configStore.dirtyPaths.add(`provider.${id}`)
 }
 </script>
 
@@ -89,155 +65,197 @@ function toggleProvider(id: string, on: boolean) {
   <div class="section-content">
     <h2 class="section-title">Providers</h2>
 
-    <div v-if="loading" class="loading-hint">
-      <Loader2 :size="14" class="animate-spin" /> Loading providers...
-    </div>
+    <div v-for="{ id, config } in providers" :key="id" class="provider-card">
+      <button class="provider-header" @click="toggleExpand(id)">
+        <component :is="expanded === id ? ChevronDown : ChevronRight" :size="12" />
+        <span class="provider-name">{{ config.name || id }}</span>
+        <span class="provider-id">{{ id }}</span>
+      </button>
 
-    <div v-else-if="error" class="error-hint">
-      <AlertCircle :size="14" /> {{ error }}
-    </div>
-
-    <div v-else class="provider-list">
-      <div v-for="row in providerRows" :key="row.id" class="provider-row">
-        <div class="provider-info">
-          <span class="provider-dot" :class="{ authed: row.authed }" />
-          <span class="provider-name">{{ row.name }}</span>
-          <span v-if="row.modelCount > 0" class="provider-models">{{ row.modelCount }} models</span>
+      <div v-if="expanded === id" class="provider-body">
+        <!-- API Key (password field, no plaintext by default) -->
+        <div class="form-row">
+          <label class="form-label">API Key (env var name)</label>
+          <div class="secret-field">
+            <input
+              :type="showApiKey.has(id) ? 'text' : 'password'"
+              :value="config.options?.apiKey ?? ''"
+              class="form-input"
+              placeholder="Env var name (e.g. ANTHROPIC_API_KEY)"
+              @input="updateOptions(id, 'apiKey', ($event.target as HTMLInputElement).value || undefined)"
+            />
+            <button class="secret-toggle" @click="toggleApiKeyVisibility(id)">
+              <EyeOff v-if="showApiKey.has(id)" :size="12" />
+              <Eye v-else :size="12" />
+            </button>
+          </div>
         </div>
-        <button
-          class="toggle-switch"
-          :class="{ on: row.isOn }"
-          @click="toggleProvider(row.id, !row.isOn)"
-        >
-          <span class="toggle-knob" />
-        </button>
+
+        <!-- Base URL -->
+        <div class="form-row">
+          <label class="form-label">Base URL</label>
+          <input
+            :value="config.options?.baseURL ?? ''"
+            type="text"
+            class="form-input"
+            placeholder="https://api.example.com"
+            @input="updateOptions(id, 'baseURL', ($event.target as HTMLInputElement).value || undefined)"
+          />
+        </div>
+
+        <!-- Timeout -->
+        <div class="form-row">
+          <label class="form-label">Timeout (ms)</label>
+          <div class="number-false-row">
+            <input
+              :value="typeof config.options?.timeout === 'number' ? config.options.timeout : ''"
+              type="number"
+              min="1"
+              class="form-input"
+              :disabled="config.options?.timeout === false"
+              placeholder="5000"
+              @input="updateOptions(id, 'timeout', Number(($event.target as HTMLInputElement).value) || undefined)"
+            />
+            <label class="checkbox-label">
+              <input
+                type="checkbox"
+                :checked="config.options?.timeout === false"
+                @change="updateOptions(id, 'timeout', ($event.target as HTMLInputElement).checked ? false : undefined)"
+              />
+              <span>Disable timeout</span>
+            </label>
+          </div>
+        </div>
+
+        <!-- API -->
+        <div class="form-row">
+          <label class="form-label">API (custom endpoint)</label>
+          <input
+            :value="config.api ?? ''"
+            type="text"
+            class="form-input"
+            placeholder="@anthropic-ai/sdk"
+            @input="updateProvider(id, 'api', ($event.target as HTMLInputElement).value || undefined)"
+          />
+        </div>
+
+        <!-- Env vars -->
+        <div class="form-row">
+          <label class="form-label">Env Vars</label>
+          <TagInput
+            :model-value="config.env ?? []"
+            @update:model-value="updateProvider(id, 'env', $event)"
+            @dirty="configStore.dirtyPaths.add(`provider.${id}.env`)"
+          />
+        </div>
+
+        <!-- NPM package -->
+        <div class="form-row">
+          <label class="form-label">NPM Package</label>
+          <input
+            :value="config.npm ?? ''"
+            type="text"
+            class="form-input"
+            placeholder="@anthropic-ai/sdk"
+            @input="updateProvider(id, 'npm', ($event.target as HTMLInputElement).value || undefined)"
+          />
+        </div>
+
+        <!-- Name -->
+        <div class="form-row">
+          <label class="form-label">Display Name</label>
+          <input
+            :value="config.name ?? ''"
+            type="text"
+            class="form-input"
+            @input="updateProvider(id, 'name', ($event.target as HTMLInputElement).value || undefined)"
+          />
+        </div>
+
+        <!-- Whitelist / Blacklist -->
+        <div class="form-row">
+          <label class="form-label">Model Whitelist</label>
+          <TagInput
+            :model-value="config.whitelist ?? []"
+            @update:model-value="updateProvider(id, 'whitelist', $event)"
+            @dirty="configStore.dirtyPaths.add(`provider.${id}.whitelist`)"
+          />
+        </div>
+        <div class="form-row">
+          <label class="form-label">Model Blacklist</label>
+          <TagInput
+            :model-value="config.blacklist ?? []"
+            @update:model-value="updateProvider(id, 'blacklist', $event)"
+            @dirty="configStore.dirtyPaths.add(`provider.${id}.blacklist`)"
+          />
+        </div>
+
+        <!-- Models (raw JSON) -->
+        <div class="form-row">
+          <label class="form-label">Models (raw JSON)</label>
+          <JsonEditor
+            :model-value="config.models"
+            @update:model-value="updateProvider(id, 'models', $event)"
+            @dirty="configStore.dirtyPaths.add(`provider.${id}.models`)"
+          />
+        </div>
+
+        <!-- Actions -->
+        <div class="card-actions">
+          <button class="btn-delete" @click="softDeleteProvider(id)">
+            <Trash2 :size="11" /> Clear config
+          </button>
+        </div>
       </div>
     </div>
 
-    <p class="section-hint">
-      Toggle to enable/disable providers. API keys are set via
-      <code>PUT /auth/:id</code> or environment variables. OAuth providers are not supported in this UI.
+    <div v-if="showAddForm" class="add-form">
+      <input v-model="newId" class="form-input" placeholder="provider id (e.g. anthropic)" @keydown.enter="addProvider" />
+      <button class="btn-add" @click="addProvider">Add</button>
+      <button class="btn-cancel" @click="showAddForm = false">Cancel</button>
+    </div>
+    <button v-else class="btn-add-card" @click="showAddForm = true">
+      <Plus :size="12" /> Add Provider
+    </button>
+
+    <p class="field-hint">
+      Only providers configured in your opencode config.json are shown here.
+      API keys are stored as environment variable names in config — actual key values go in
+      <code>~/.config/opencode/auth.json</code> (via <code>PUT /auth/:id</code> or TUI <code>/connect</code>).
     </p>
   </div>
 </template>
 
 <style scoped>
-.section-content {
-  padding: var(--space-12) var(--space-16);
-  display: flex;
-  flex-direction: column;
-  gap: var(--space-12);
-}
-
-.section-title {
-  font-size: var(--font-size-ui);
-  font-weight: 600;
-  color: var(--text-primary);
-  text-transform: uppercase;
-  letter-spacing: 0.06em;
-  margin: 0;
-}
-
-.provider-list {
-  display: flex;
-  flex-direction: column;
-  gap: 2px;
-}
-
-.provider-row {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  padding: var(--space-6) var(--space-8);
-  border-radius: var(--radius-xs);
-  transition: background var(--duration-fast) ease;
-}
-
-.provider-row:hover {
-  background: var(--bg-hover);
-}
-
-.provider-info {
-  display: flex;
-  align-items: center;
-  gap: var(--space-6);
-}
-
-.provider-dot {
-  width: 6px;
-  height: 6px;
-  border-radius: 50%;
-  background: var(--text-placeholder);
-  flex-shrink: 0;
-}
-
-.provider-dot.authed {
-  background: var(--success);
-}
-
-.provider-name {
-  font-size: var(--font-size-ui);
-  color: var(--text-primary);
-}
-
-.provider-models {
-  font-size: var(--font-size-small);
-  color: var(--text-muted);
-}
-
-.toggle-switch {
-  width: 32px;
-  height: 16px;
-  border-radius: 8px;
-  border: none;
-  background: var(--bg-element);
-  cursor: pointer;
-  position: relative;
-  transition: background var(--duration-fast) ease;
-  padding: 0;
-}
-
-.toggle-switch.on {
-  background: var(--text-accent);
-}
-
-.toggle-knob {
-  position: absolute;
-  top: 2px;
-  left: 2px;
-  width: 12px;
-  height: 12px;
-  border-radius: 50%;
-  background: var(--text-primary);
-  transition: transform var(--duration-fast) ease;
-}
-
-.toggle-switch.on .toggle-knob {
-  transform: translateX(16px);
-}
-
-.section-hint {
-  font-size: var(--font-size-small);
-  color: var(--text-placeholder);
-}
-
-.section-hint code {
-  font-family: var(--font-mono);
-  font-size: 10px;
-  background: var(--bg-element);
-  padding: 1px 4px;
-  border-radius: var(--radius-xs);
-}
-
-.loading-hint, .error-hint {
-  display: flex;
-  align-items: center;
-  gap: var(--space-6);
-  color: var(--text-muted);
-}
-
-.error-hint { color: var(--error); }
-
-.animate-spin { animation: spin 1s linear infinite; }
-@keyframes spin { to { transform: rotate(360deg); } }
+.section-content { padding: var(--space-12) var(--space-16); display: flex; flex-direction: column; gap: var(--space-12); }
+.section-title { font-size: var(--font-size-ui); font-weight: 600; color: var(--text-primary); text-transform: uppercase; letter-spacing: 0.06em; margin: 0; }
+.provider-card { border: 1px solid var(--border-variant); border-radius: var(--radius-xs); overflow: hidden; }
+.provider-header { display: flex; align-items: center; gap: var(--space-6); width: 100%; padding: var(--space-6) var(--space-8); background: var(--bg-app); border: none; color: var(--text-primary); cursor: pointer; font-family: var(--font-ui); font-size: var(--font-size-ui); text-align: left; }
+.provider-header:hover { background: var(--bg-hover); }
+.provider-name { flex: 1; }
+.provider-id { font-family: var(--font-mono); font-size: 10px; color: var(--text-muted); }
+.provider-body { padding: var(--space-8); background: var(--bg-editor); display: flex; flex-direction: column; gap: var(--space-8); }
+.form-row { display: flex; flex-direction: column; gap: var(--space-6); }
+.form-label { font-size: 11px; font-weight: 500; text-transform: uppercase; letter-spacing: 0.06em; color: var(--text-muted); }
+.form-input { width: 100%; padding: 4px var(--space-8); height: 28px; background: var(--bg-element); border: 1px solid var(--border-variant); border-radius: var(--radius-xs); color: var(--text-primary); font-family: var(--font-ui); font-size: var(--font-size-ui); outline: none; }
+.form-input:focus { background: var(--bg-editor); box-shadow: 0 0 0 1px var(--border-focused); }
+.form-input:disabled { opacity: 0.4; }
+.secret-field { display: flex; gap: var(--space-4); }
+.secret-field .form-input { flex: 1; }
+.secret-toggle { display: flex; align-items: center; justify-content: center; width: 28px; height: 28px; border: 1px solid var(--border-variant); border-radius: var(--radius-xs); background: var(--bg-element); color: var(--text-muted); cursor: pointer; }
+.secret-toggle:hover { color: var(--text-primary); }
+.number-false-row { display: flex; align-items: center; gap: var(--space-8); }
+.number-false-row .form-input { flex: 1; }
+.checkbox-label { display: flex; align-items: center; gap: 4px; font-size: var(--font-size-small); color: var(--text-muted); cursor: pointer; white-space: nowrap; }
+.card-actions { display: flex; justify-content: flex-end; }
+.btn-delete { display: inline-flex; align-items: center; gap: 4px; padding: 4px var(--space-8); background: transparent; border: 1px solid var(--error); border-radius: var(--radius-xs); color: var(--error); cursor: pointer; font-size: var(--font-size-small); }
+.btn-delete:hover { background: rgba(217,87,87,0.1); }
+.add-form { display: flex; gap: var(--space-6); align-items: center; }
+.btn-add, .btn-cancel { padding: 4px var(--space-8); border-radius: var(--radius-xs); cursor: pointer; font-size: var(--font-size-ui); border: none; }
+.btn-add { background: var(--text-accent); color: var(--bg-editor); }
+.btn-cancel { background: transparent; color: var(--text-muted); }
+.btn-add-card { display: inline-flex; align-items: center; gap: 4px; padding: var(--space-6) var(--space-8); background: transparent; border: 1px dashed var(--border-variant); border-radius: var(--radius-xs); color: var(--text-muted); cursor: pointer; font-size: var(--font-size-ui); }
+.btn-add-card:hover { color: var(--text-primary); border-color: var(--text-accent); }
+.field-hint { font-size: var(--font-size-small); color: var(--text-placeholder); }
+.field-hint code { font-family: var(--font-mono); font-size: 10px; background: var(--bg-element); padding: 1px 4px; border-radius: var(--radius-xs); }
 </style>

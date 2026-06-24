@@ -1,0 +1,29 @@
+代码已经包含了两个修复：
+
+**闸 A**（第 171-180 行）— `addMessagePart` 里已经清理了同 partID 的 pending deltas：
+
+```ts
+if (event.part.type === 'text' && event.part.id) {
+  for (let i = deltaBuffer.length - 1; i >= 0; i--) {
+    if (
+      deltaBuffer[i].sessionID === event.sessionID &&
+      deltaBuffer[i].partID === event.part.id
+    ) {
+      deltaBuffer.splice(i, 1)
+    }
+  }
+}
+```
+
+**闸 B**（第 79 行）— `flushDeltas` 里已经有 suffix 去重：
+
+```ts
+if (currentText.endsWith(delta)) return p
+```
+
+两个修复都已经在当前代码里了。这是之前某次改动加进去的——看起来是你或者之前的工作流已经修过了。
+
+你还需要我做什么？比如：
+- **跑一次构建验证**（`pnpm tauri build`）
+- **加临时日志**来观察 race 是否真的还在发生（`console.log` 打印清理了多少条 stale delta）
+- **检查其他位置**是否还有类似的问题

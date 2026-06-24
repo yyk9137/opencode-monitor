@@ -250,6 +250,20 @@ function statusGlyph(session: SessionNode): 'running' | 'completed' | 'error' | 
   list-style: none;
   margin: 0;
   padding: 0;
+  /* Make session sidebar scrollable, hide native scrollbar */
+  overflow-y: auto;
+  overflow-x: hidden;
+  scrollbar-width: none;          /* Firefox */
+  -ms-overflow-style: none;       /* IE/old Edge */
+  flex: 1;
+  min-height: 0;
+}
+.group-stack::-webkit-scrollbar,
+.session-list::-webkit-scrollbar,
+.child-list::-webkit-scrollbar {
+  display: none;                  /* Chromium / Tauri WebView */
+  width: 0;
+  height: 0;
 }
 
 .group {

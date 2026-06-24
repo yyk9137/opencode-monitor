@@ -73,7 +73,11 @@ export const useSessionStore = defineStore('session', () => {
       // Create new messages array with updated text (immutable)
       const newMessages = node.messages.map((p) => {
         if (p.id === partID && p.type === 'text') {
-          return { ...p, text: ((p as TextPart).text ?? '') + delta } as TextPart
+          const currentText = (p as TextPart).text ?? ''
+          // Idempotency: if the server already delivered this exact suffix
+          // via message.part.updated, don't append it again.
+          if (currentText.endsWith(delta)) return p
+          return { ...p, text: currentText + delta } as TextPart
         }
         return p
       })
@@ -160,6 +164,20 @@ export const useSessionStore = defineStore('session', () => {
     const map = new Map(sessions.value)
     const node = map.get(event.sessionID)
     if (!node) return
+
+    // message.part.updated carries the canonical full state for this part.
+    // Any deltas still coalescing in the RAF buffer are now stale and would
+    // duplicate the tail if flushed after this replacement.
+    if (event.part.type === 'text' && event.part.id) {
+      for (let i = deltaBuffer.length - 1; i >= 0; i--) {
+        if (
+          deltaBuffer[i].sessionID === event.sessionID &&
+          deltaBuffer[i].partID === event.part.id
+        ) {
+          deltaBuffer.splice(i, 1)
+        }
+      }
+    }
 
     // Immutable messages array update
     const partId = event.part.id
@@ -398,9 +416,17 @@ export const useSessionStore = defineStore('session', () => {
 
   const tree = computed<SessionNode[]>(() => {
     const all = Array.from(sessions.value.values())
-    // Filter by cwd if --cwd was provided
-    const filtered = cwdFilter.value
-      ? all.filter(s => s.directory === cwdFilter.value)
+    // Filter by cwd if --cwd was provided.
+    // Normalize paths: strip trailing separators, unify to backslash,
+    // lowercase for case-insensitive comparison (Windows is case-insensitive).
+    const cwd = cwdFilter.value
+    const filtered = cwd
+      ? all.filter(s => {
+          const normalize = (p: string) => p.replace(/[\\/]+$/, '').replace(/\//g, '\\').toLowerCase()
+          const sessionDir = normalize(s.directory)
+          const normalizedCwd = normalize(cwd)
+          return sessionDir === normalizedCwd || sessionDir.startsWith(normalizedCwd + '\\')
+        })
       : all
     const childrenMap = new Map<string, SessionNode[]>()
     const topLevel: SessionNode[] = []
@@ -422,6 +448,16 @@ export const useSessionStore = defineStore('session', () => {
 
     for (const node of topLevel) {
       node.children = childrenMap.get(node.id) ?? []
+    }
+
+    // Promote orphaned children to top-level — their parent session
+    // might not be in the filtered set (e.g. parent is from another project,
+    // or was truncated by the server's session limit).
+    const topLevelIds = new Set(topLevel.map(n => n.id))
+    for (const [parentId, children] of childrenMap) {
+      if (!topLevelIds.has(parentId)) {
+        topLevel.push(...children)
+      }
     }
 
     return topLevel

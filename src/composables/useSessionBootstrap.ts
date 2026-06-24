@@ -53,8 +53,9 @@ export function useSessionBootstrap(): UseSessionBootstrapReturn {
       const allSessions: { sessionInfo: SessionV2Info; instanceUrl: string }[] = []
 
       // Always fetch without filter (gets default workspace sessions)
+      // Pass limit=500 to avoid server's DefaultSessionsLimit=50 cap
       try {
-        const response = await fetch(`${url}/api/session`)
+        const response = await fetch(`${url}/api/session?limit=500`)
         if (response.ok) {
           const body: SessionListResponse = await response.json()
           for (const sessionInfo of body.data) {
@@ -69,7 +70,7 @@ export function useSessionBootstrap(): UseSessionBootstrapReturn {
       for (const dir of directories) {
         try {
           const encoded = encodeURIComponent(dir)
-          const response = await fetch(`${url}/api/session?directory=${encoded}`)
+          const response = await fetch(`${url}/api/session?directory=${encoded}&limit=500`)
           if (response.ok) {
             const body: SessionListResponse = await response.json()
             for (const sessionInfo of body.data) {

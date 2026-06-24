@@ -51,6 +51,16 @@
   --space-16: 16px;
   --space-24: 24px;
 
+  /* Markdown body — Zed MarkdownStyle::themed(MarkdownFont::Agent) */
+  --md-font-size:   14px;                          /* agent_ui_font_size default */
+  --md-line-height: 1.75;                          /* buffer_font_size * 1.75 */
+  --md-paragraph-line-height: 1.3;                 /* paragraph line_height */
+  --inline-code-bg: rgba(191, 189, 182, 0.08);     /* editor_foreground.opacity(0.08) */
+  --link-bg:        rgba(191, 189, 182, 0.025);    /* editor_foreground.opacity(0.025) */
+  --link-underline: rgba(230, 180, 80, 0.5);       /* text_accent.opacity(0.5) — uses golden accent */
+  --code-block-bg: #0d1016;                        /* editor.background */
+  --code-block-border: #2d2f34;                    /* border.variant */
+
   /* 圆角 */
   --radius-xs: 2px;
   --radius-sm: 4px;
@@ -66,6 +76,21 @@
   --titlebar-height: 32px;
   --sidebar-width:   240px;
   --border-width:    1px;
+
+  /* ─── Zed agent-chat tokens (1:1 fidelity with thread_view.rs) ─────
+     gap_1p5=6px, gap_2=8px, px_1=4px, px_2p5=10px, px_3p5=14px. */
+  --tool-gap:                  6px;     /* Zed gap_1p5() icon↔label */
+  --tool-row-height:           22px;    /* approx line_height - px(2) */
+  --tool-header-pad-y:         4px;     /* Zed py_1() */
+  --tool-header-pad-x:         8px;     /* Zed px_2() */
+  --tool-disclosure-opacity:   0;       /* hide disclosure until hover */
+  --tool-outline-soft:         rgba(45, 47, 52, 0.65);   /* Zed border.variant @ 65% */
+  --tool-card-bg:              var(--bg-element);          /* tool_card_header bg */
+  --thinking-body-pad-left:    14px;    /* Zed px_3p5() */
+  --thinking-body-pad-top:     8px;     /* Zed mt_2() */
+  --thinking-border-left:      1px solid var(--border);   /* 1px left accent */
+  --part-vertical-rhythm:     2px;     /* tight inter-part gap */
+  --message-column-max:       760px;   /* Zed agent chat logical width */
 }
 
 /* ─── Global Reset ─── */

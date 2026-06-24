@@ -1,29 +1,23 @@
 <script setup lang="ts">
 import { computed } from 'vue'
-import { Settings, ChevronRight, RotateCcw, Loader2 } from 'lucide-vue-next'
+import { ChevronRight, RotateCcw, Loader2 } from 'lucide-vue-next'
 import { useConfigStore } from '@/stores/config'
 import InstanceSelector from './InstanceSelector.vue'
 import RestartOverlay from './RestartOverlay.vue'
 import ConfirmDialog from './ConfirmDialog.vue'
-import ModelsSection from './sections/ModelsSection.vue'
-import GeneralSection from './sections/GeneralSection.vue'
 import ProvidersSection from './sections/ProvidersSection.vue'
-import ProviderConfigSection from './sections/ProviderConfigSection.vue'
+import PluginsSection from './sections/PluginsSection.vue'
 import AgentsSection from './sections/AgentsSection.vue'
 import MCPSection from './sections/MCPSection.vue'
-import AdvancedSection from './sections/AdvancedSection.vue'
 
 const configStore = useConfigStore()
 
 // Navigation sections
 const navSections = [
-  { id: 'models', label: 'Models' },
-  { id: 'general', label: 'General' },
   { id: 'providers', label: 'Providers' },
-  { id: 'provider-config', label: 'Provider Config' },
+  { id: 'plugins', label: 'Plugins' },
   { id: 'agents', label: 'Agents' },
   { id: 'mcp', label: 'MCP' },
-  { id: 'advanced', label: 'Advanced' },
 ]
 
 function selectSection(id: string) {
@@ -143,17 +137,10 @@ function handleKeydown(e: KeyboardEvent) {
         </nav>
 
         <div class="drawer-content" :inert="configStore.pendingDismiss !== null">
-          <ModelsSection v-if="configStore.activeSection === 'models'" />
-          <GeneralSection v-else-if="configStore.activeSection === 'general'" />
-          <ProvidersSection v-else-if="configStore.activeSection === 'providers'" />
-          <ProviderConfigSection v-else-if="configStore.activeSection === 'provider-config'" />
+          <ProvidersSection v-if="configStore.activeSection === 'providers'" />
+          <PluginsSection v-else-if="configStore.activeSection === 'plugins'" />
           <AgentsSection v-else-if="configStore.activeSection === 'agents'" />
           <MCPSection v-else-if="configStore.activeSection === 'mcp'" />
-          <AdvancedSection v-else-if="configStore.activeSection === 'advanced'" />
-          <div v-else class="section-placeholder">
-            <Settings :size="32" />
-            <p>{{ configStore.activeSection }}</p>
-          </div>
         </div>
       </div>
 

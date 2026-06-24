@@ -134,13 +134,9 @@ watch(
 
       <ChevronDown :size="12" class="selector-chevron" :class="{ open: dropdownOpen }" />
 
-      <button
-        class="rescan-btn"
-        title="重新扫描实例"
-        @click.stop="rescan"
-      >
+      <span class="rescan-btn" title="重新扫描实例" @click.stop="rescan">
         <RefreshCw :size="10" :class="{ spinning: scanning }" />
-      </button>
+      </span>
     </button>
 
     <!-- Dropdown menu -->
