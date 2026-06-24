@@ -1,7 +1,7 @@
 import { defineStore } from 'pinia'
 import { ref, shallowRef, computed } from 'vue'
 import { fetch } from '@tauri-apps/plugin-http'
-import { writeTextFile, exists } from '@tauri-apps/plugin-fs'
+import { readTextFile, writeTextFile, exists } from '@tauri-apps/plugin-fs'
 import { homeDir, join } from '@tauri-apps/api/path'
 import type { OpenCodeConfig } from '@/types/opencode-config'
 
@@ -48,6 +48,30 @@ async function getConfigPath(): Promise<string> {
   // Default to opencode.jsonc (will create if doesn't exist)
   _configPath = await join(home, '.config', 'opencode', 'opencode.jsonc')
   return _configPath
+}
+
+// ── Strip JSONC comments (// and /* */) for parsing ──────────────────────
+function stripJsonComments(text: string): string {
+  let result = ''
+  let inString = false
+  let escaped = false
+  let i = 0
+  while (i < text.length) {
+    const char = text[i]
+    const next = text[i + 1]
+    if (inString) {
+      result += char
+      if (escaped) { escaped = false } else if (char === '\\') { escaped = true } else if (char === '"') { inString = false }
+      i++
+      continue
+    }
+    if (char === '"') { inString = true; result += char; i++; continue }
+    if (char === '/' && next === '/') { while (i < text.length && text[i] !== '\n') i++; continue }
+    if (char === '/' && next === '*') { i += 2; while (i < text.length && !(text[i] === '*' && text[i + 1] === '/')) i++; i += 2; continue }
+    result += char
+    i++
+  }
+  return result
 }
 
 // ── Config file path resolution (for writing) ───────────────────────────
@@ -119,7 +143,7 @@ export const useConfigStore = defineStore('config', () => {
     }
   }
 
-  // ── Save config: write directly to opencode.jsonc (not API) ─────────────
+  // ── Save config: field-level merge into existing opencode.jsonc ─────────
   async function saveConfig(): Promise<boolean> {
     if (phase.value !== 'idle') return false
     if (!original.value || !draft.value) return false
@@ -129,15 +153,50 @@ export const useConfigStore = defineStore('config', () => {
 
     try {
       const configPath = await getConfigPath()
-      // Write the entire draft directly to the user-level config file
-      const jsonStr = JSON.stringify(draft.value, null, 2)
+
+      // Read existing config from disk
+      let existingConfig: Record<string, unknown> = {}
+      if (await exists(configPath)) {
+        try {
+          const raw = await readTextFile(configPath)
+          const stripped = stripJsonComments(raw)
+          existingConfig = JSON.parse(stripped)
+        } catch {
+          existingConfig = {}
+        }
+      }
+
+      // Determine which top-level sections were changed
+      // For each dirty path, extract the top-level key
+      const dirtySections = new Set<string>()
+      for (const path of dirtyPaths.value) {
+        const topKey = path.split('.')[0]
+        if (topKey) dirtySections.add(topKey)
+      }
+
+      // Merge only changed sections from draft into existing config
+      const draftPlain = cloneDeep(draft.value) as Record<string, unknown>
+
+      for (const section of dirtySections) {
+        if (section in draftPlain) {
+          // Replace this section entirely with draft's version
+          existingConfig[section] = draftPlain[section]
+        } else {
+          // Section was deleted from draft — remove from existing
+          delete existingConfig[section]
+        }
+      }
+
+      // Write back
+      const jsonStr = JSON.stringify(existingConfig, null, 2)
       await writeTextFile(configPath, jsonStr)
 
-      // Update original to match what we just wrote
+      // Update original to match what we just wrote (re-read via API after restart)
+      // For now, update original with the merged result
       original.value = cloneDeep(draft.value)
       dirtyPaths.value = new Set()
 
-      // Restart the OpenCode instance so it picks up the new config
+      // Restart the OpenCode instance
       phase.value = 'restarting'
       restartStartTime.value = Date.now()
       restartDetected.value = false
