@@ -1,16 +1,17 @@
 import { defineStore } from 'pinia'
 import { ref, shallowRef, computed } from 'vue'
 import { fetch } from '@tauri-apps/plugin-http'
+import { readTextFile, writeTextFile, exists } from '@tauri-apps/plugin-fs'
+import { homeDir, join } from '@tauri-apps/api/path'
 import type { OpenCodeConfig } from '@/types/opencode-config'
-import { validateConfig } from '@/composables/useConfigValidator'
 
-// ── Dismiss reason union (shared with step-06 ConfirmDialog) ────────────────
+// ── Dismiss reason union (shared with ConfirmDialog) ──────────────────────
 export type DismissReason =
   | { kind: 'close' }
   | { kind: 'switch-instance'; newUrl: string }
   | { kind: 'window-close' }
 
-// ── Phase enum (single mutex for fetchConfig/saveConfig) ────────────────────
+// ── Phase enum ─────────────────────────────────────────────────────────────
 export type ConfigPhase = 'idle' | 'loading' | 'saving' | 'restarting' | 'timeout'
 
 // ── Error tracking ─────────────────────────────────────────────────────────
@@ -20,85 +21,82 @@ export interface ConfigError {
   message: string
 }
 
-// ── Diff path (for deep merge strategy from shared context) ─────────────────
-export interface DiffPath {
-  path: (string | number)[]
-  oldValue: unknown
-  newValue: unknown
-}
-
-// ── Deep clone that handles Vue reactive proxies (structuredClone fails on them) ─
+// ── Deep clone that handles Vue reactive proxies ──────────────────────────
 function cloneDeep<T>(value: T): T {
   if (value === null || value === undefined) return value
   return JSON.parse(JSON.stringify(value))
 }
 
-/**
- * Compute leaf-path diffs between original and draft.
- * Arrays are treated as replace (not merge) — mergeArrays: false.
- */
-export function computeDiff(original: unknown, draft: unknown, path: (string | number)[] = []): DiffPath[] {
-  const diffs: DiffPath[] = []
+// ── Config file path resolution ────────────────────────────────────────────
+let _configPath: string | null = null
 
-  if (original === draft) return diffs
-
-  // Both objects (not arrays, not null) → recurse
-  if (
-    typeof original === 'object' && original !== null && !Array.isArray(original) &&
-    typeof draft === 'object' && draft !== null && !Array.isArray(draft)
-  ) {
-    const origObj = original as Record<string, unknown>
-    const draftObj = draft as Record<string, unknown>
-    const allKeys = new Set([...Object.keys(origObj), ...Object.keys(draftObj)])
-    for (const key of allKeys) {
-      diffs.push(...computeDiff(origObj[key], draftObj[key], [...path, key]))
+async function getConfigPath(): Promise<string> {
+  if (_configPath) return _configPath
+  const home = await homeDir()
+  // Try opencode.jsonc first, then opencode.json, then config.json
+  const candidates = [
+    await join(home, '.config', 'opencode', 'opencode.jsonc'),
+    await join(home, '.config', 'opencode', 'opencode.json'),
+    await join(home, '.config', 'opencode', 'config.json'),
+  ]
+  for (const p of candidates) {
+    if (await exists(p)) {
+      _configPath = p
+      return p
     }
-    return diffs
   }
-
-  // Everything else (primitives, arrays, null vs object, etc.) → leaf diff
-  diffs.push({ path, oldValue: original, newValue: draft })
-  return diffs
+  // Default to opencode.jsonc (will create if doesn't exist)
+  _configPath = await join(home, '.config', 'opencode', 'opencode.jsonc')
+  return _configPath
 }
 
-/**
- * Apply diffs onto a fresh tree (from re-GET). Returns a new merged object.
- * mergeArrays: false — arrays are replaced, not concatenated.
- */
-export function applyDiff(fresh: unknown, diffs: DiffPath[]): unknown {
-  if (diffs.length === 0) return cloneDeep(fresh)
+// ── Strip JSONC comments (// and /* */) for parsing ──────────────────────
+function stripJsonComments(text: string): string {
+  let result = ''
+  let inString = false
+  let escaped = false
+  let i = 0
+  while (i < text.length) {
+    const char = text[i]
+    const next = text[i + 1]
 
-  // Deep clone fresh so we don't mutate it
-  const result = cloneDeep(fresh)
-
-  for (const diff of diffs) {
-    if (diff.path.length === 0) {
-      // Root replacement
-      return cloneDeep(diff.newValue)
-    }
-
-    // Navigate to parent
-    let current: unknown = result
-    for (let i = 0; i < diff.path.length - 1; i++) {
-      if (current === null || typeof current !== 'object') {
-        current = {}
-        break
+    if (inString) {
+      result += char
+      if (escaped) {
+        escaped = false
+      } else if (char === '\\') {
+        escaped = true
+      } else if (char === '"') {
+        inString = false
       }
-      const key = diff.path[i]
-      current = (current as Record<string | number, unknown>)[key]
+      i++
+      continue
     }
 
-    if (current !== null && typeof current === 'object') {
-      const lastKey = diff.path[diff.path.length - 1]
-      const parent = current as Record<string | number, unknown>
-      if (diff.newValue === undefined) {
-        delete parent[lastKey]
-      } else {
-        parent[lastKey] = cloneDeep(diff.newValue)
-      }
+    if (char === '"') {
+      inString = true
+      result += char
+      i++
+      continue
     }
+
+    if (char === '/' && next === '/') {
+      // Line comment — skip to end of line
+      while (i < text.length && text[i] !== '\n') i++
+      continue
+    }
+
+    if (char === '/' && next === '*') {
+      // Block comment — skip to */
+      i += 2
+      while (i < text.length && !(text[i] === '*' && text[i + 1] === '/')) i++
+      i += 2
+      continue
+    }
+
+    result += char
+      i++
   }
-
   return result
 }
 
@@ -107,43 +105,32 @@ export const useConfigStore = defineStore('config', () => {
   const original = shallowRef<OpenCodeConfig | null>(null)
   const draft = ref<OpenCodeConfig | null>(null)
 
-  // ── Operation state — single phase enum for mutex ───────────────────────
+  // ── Operation state ──────────────────────────────────────────────────────
   const phase = ref<ConfigPhase>('idle')
 
   // ── UI state ─────────────────────────────────────────────────────────────
-  const activeSection = ref<string>('models')
+  const activeSection = ref<string>('providers')
   const panelOpen = ref(false)
 
-  // ── Instance target ─────────────────────────────────────────────────────
+  // ── Instance target (for restart only) ────────────────────────────────────
   const targetUrl = ref<string | null>(null)
 
   // ── Restart state ───────────────────────────────────────────────────────
   const restartStartTime = ref(0)
-  // Timeout IDs for step-05 restart detection (non-reactive, kept as refs for store exposure)
-  const timeoutId = ref<ReturnType<typeof setTimeout> | null>(null)
-  const absoluteTimeoutId = ref<ReturnType<typeof setTimeout> | null>(null)
+  const restartElapsed = ref(0)
+  const restartDetected = ref(false)
+  const restartConfirmed = ref(false)
+  let progressTimer: ReturnType<typeof setInterval> | null = null
+  let healthPollInterval: ReturnType<typeof setInterval> | null = null
+  let timeoutId: ReturnType<typeof setTimeout> | null = null
+  let absoluteTimeoutId: ReturnType<typeof setTimeout> | null = null
 
   // ── Dirty-state confirmation ────────────────────────────────────────────
   const pendingDismiss = ref<DismissReason | null>(null)
-
-  // ── Save confirmation (prevents fetchConfig during confirm dialog) ───────
   const pendingSave = ref(false)
-
-  // ── Signal for App.vue to call connectAll after restart ──────────────────
   const pendingConnectNewUrl = ref<string | null>(null)
-
-  // ── Error tracking ───────────────────────────────────────────────────────
   const lastError = ref<ConfigError | null>(null)
-
-  // ── Dirty-path tracker (Set<string> of touched leaf paths) ───────────────
   const dirtyPaths = ref<Set<string>>(new Set())
-
-  // ── Restart detection state ──────────────────────────────────────────────
-  const restartElapsed = ref(0)  // live timer in ms
-  const restartDetected = ref(false)
-  const restartConfirmed = ref(false)
-  let healthPollInterval: ReturnType<typeof setInterval> | null = null
-  let progressTimer: ReturnType<typeof setInterval> | null = null
 
   // ── Actions ─────────────────────────────────────────────────────────────
 
@@ -151,6 +138,7 @@ export const useConfigStore = defineStore('config', () => {
     targetUrl.value = url
   }
 
+  // ── Read config directly from file ──────────────────────────────────────
   async function fetchConfig(): Promise<boolean> {
     if (phase.value !== 'idle') return false
     if (pendingSave.value) return false
@@ -159,20 +147,22 @@ export const useConfigStore = defineStore('config', () => {
     lastError.value = null
 
     try {
-      if (!targetUrl.value) {
+      const configPath = await getConfigPath()
+
+      if (!(await exists(configPath))) {
+        // No config file — start with empty config
+        const emptyConfig = {} as OpenCodeConfig
+        original.value = emptyConfig
+        draft.value = cloneDeep(emptyConfig)
+        dirtyPaths.value = new Set()
         phase.value = 'idle'
-        lastError.value = { at: Date.now(), phase: 'loading', message: 'No target URL set' }
-        return false
+        return true
       }
 
-      const response = await fetch(`${targetUrl.value}/config`)
-      if (!response.ok) {
-        phase.value = 'idle'
-        lastError.value = { at: Date.now(), phase: 'loading', message: `GET /config failed: ${response.status}` }
-        return false
-      }
+      const raw = await readTextFile(configPath)
+      const stripped = stripJsonComments(raw)
+      const config = JSON.parse(stripped) as OpenCodeConfig
 
-      const config = (await response.json()) as OpenCodeConfig
       original.value = config
       draft.value = cloneDeep(config)
       dirtyPaths.value = new Set()
@@ -180,102 +170,69 @@ export const useConfigStore = defineStore('config', () => {
       return true
     } catch (e) {
       phase.value = 'idle'
-      lastError.value = { at: Date.now(), phase: 'loading', message: String(e) }
+      lastError.value = { at: Date.now(), phase: 'loading', message: 'Failed to read config: ' + String(e) }
       return false
     }
   }
 
+  // ── Save config directly to file (no API, no mergeDeep) ──────────────────
   async function saveConfig(): Promise<boolean> {
     if (phase.value !== 'idle') return false
-    if (!targetUrl.value) { console.error('[saveConfig] No targetUrl'); return false }
-    if (!original.value) { console.error('[saveConfig] No original (fetchConfig not called?)'); return false }
-    if (!draft.value) { console.error('[saveConfig] No draft'); return false }
+    if (!original.value || !draft.value) return false
 
     phase.value = 'saving'
     lastError.value = null
 
     try {
-      // Step 1: GET fresh tree (prevent TOCTOU)
-      const freshResp = await fetch(`${targetUrl.value}/config`)
-      if (!freshResp.ok) {
-        phase.value = 'idle'
-        lastError.value = { at: Date.now(), phase: 'saving', message: `re-GET /config failed: ${freshResp.status}` }
-        return false
-      }
-      const freshTree = (await freshResp.json()) as OpenCodeConfig
+      const configPath = await getConfigPath()
+      // Write the entire draft directly to the file — no merge, no API
+      const jsonStr = JSON.stringify(draft.value, null, 2)
+      await writeTextFile(configPath, jsonStr)
 
-      // Step 2: Compute user diffs (only leaf paths the user touched)
-      const userDiff = computeDiff(original.value, draft.value)
-      console.log('[saveConfig] userDiff count:', userDiff.length, userDiff.slice(0, 5))
+      // Update original to match what we just wrote
+      original.value = cloneDeep(draft.value)
+      dirtyPaths.value = new Set()
 
-      // Step 3: Apply diffs onto fresh tree
-      const merged = applyDiff(freshTree, userDiff) as OpenCodeConfig
-      console.log('[saveConfig] merged provider keys:', Object.keys(merged.provider || {}))
-
-      // Step 4: AJV validate
-      const validation = validateConfig(merged)
-      if (!validation.valid) {
-        console.error('[saveConfig] AJV validation failed:', validation.errors)
-        phase.value = 'idle'
-        lastError.value = { at: Date.now(), phase: 'saving', message: `Validation failed: ${validation.errors.join('; ')}` }
-        return false
-      }
-      console.log('[saveConfig] AJV validation passed')
-
-      // Step 5: PATCH /config (full merged tree)
-      const bodyStr = JSON.stringify(merged)
-      console.log('[saveConfig] PATCHing to', targetUrl.value + '/config')
-      console.log('[saveConfig] PATCH body length:', bodyStr.length)
-      console.log('[saveConfig] PATCH body (first 2000 chars):', bodyStr.substring(0, 2000))
-      console.log('[saveConfig] provider keys in merged:', Object.keys(merged.provider || {}))
-      const patchResp = await fetch(`${targetUrl.value}/config`, {
-        method: 'PATCH',
-        headers: { 'Content-Type': 'application/json' },
-        body: bodyStr,
-      })
-      console.log('[saveConfig] PATCH response:', patchResp.status, patchResp.ok)
-      if (!patchResp.ok) {
-        const respText = await patchResp.text().catch(() => '')
-        console.error('[saveConfig] PATCH error body:', respText)
-        phase.value = 'idle'
-        lastError.value = { at: Date.now(), phase: 'saving', message: `PATCH /config failed: ${patchResp.status} — ${respText.substring(0, 500)}` }
-        return false
-      }
-
-      // Step 6: Enter restarting phase
+      // Restart the OpenCode instance so it picks up the new config
       phase.value = 'restarting'
       restartStartTime.value = Date.now()
       restartDetected.value = false
       restartConfirmed.value = false
       restartElapsed.value = 0
 
-      // Start live timer
       progressTimer = setInterval(() => {
         restartElapsed.value = Date.now() - restartStartTime.value
       }, 100)
 
-      // Start 90s no-progress timeout
-      timeoutId.value = setTimeout(() => {
-        if (phase.value === 'restarting') {
-          phase.value = 'timeout'
-        }
+      // 90s no-progress timeout
+      timeoutId = setTimeout(() => {
+        if (phase.value === 'restarting') phase.value = 'timeout'
       }, 90_000)
 
-      // Start 5min absolute timeout
-      absoluteTimeoutId.value = setTimeout(() => {
+      // 5min absolute timeout
+      absoluteTimeoutId = setTimeout(() => {
         stopDetection()
         if (phase.value === 'restarting' || phase.value === 'timeout') {
           phase.value = 'timeout'
         }
       }, 300_000)
 
-      // Step 7: Start health polling
+      // Dispose the instance via API to trigger restart
+      if (targetUrl.value) {
+        try {
+          await fetch(targetUrl.value + '/instance', { method: 'DELETE' })
+        } catch {
+          // Instance may not support DELETE — that's ok, user can restart manually
+        }
+      }
+
+      // Start health polling to detect restart
       startHealthPolling()
 
       return true
     } catch (e) {
       phase.value = 'idle'
-      lastError.value = { at: Date.now(), phase: 'saving', message: String(e) }
+      lastError.value = { at: Date.now(), phase: 'saving', message: 'Failed to write config: ' + String(e) }
       return false
     }
   }
@@ -285,14 +242,11 @@ export const useConfigStore = defineStore('config', () => {
   function startHealthPolling() {
     if (healthPollInterval) clearInterval(healthPollInterval)
     healthPollInterval = setInterval(async () => {
-      // Guard: only run during restarting/timeout
       if (phase.value !== 'restarting' && phase.value !== 'timeout') return
-
       if (!targetUrl.value) return
 
-      // Health poll with timeout
       try {
-        const healthPromise = fetch(`${targetUrl.value}/global/health`)
+        const healthPromise = fetch(targetUrl.value + '/global/health')
         const timeoutPromise = new Promise<Response | null>(r => setTimeout(() => r(null), 1500))
         const response = await Promise.race([healthPromise, timeoutPromise])
         if (response?.ok) {
@@ -305,46 +259,33 @@ export const useConfigStore = defineStore('config', () => {
   }
 
   async function onRestartDetected() {
-    // Guard: only proceed if in restarting/timeout
     if (phase.value !== 'restarting' && phase.value !== 'timeout') return
-
-    // Prevent duplicate triggers
     if (restartDetected.value) return
     restartDetected.value = true
 
-    // Reset no-progress timer (instance responded)
-    if (timeoutId.value) {
-      clearTimeout(timeoutId.value)
-      timeoutId.value = setTimeout(() => {
+    // Reset no-progress timer
+    if (timeoutId) {
+      clearTimeout(timeoutId)
+      timeoutId = setTimeout(() => {
         if (phase.value === 'restarting') phase.value = 'timeout'
       }, 90_000)
     }
 
-    // Step 8: Confirm GET /config
-    if (!targetUrl.value) return
+    // Re-read config from file to confirm
     try {
-      const resp = await fetch(`${targetUrl.value}/config`)
-      if (!resp.ok) {
-        // Confirm failed but save succeeded
-        phase.value = 'idle'
-        restartConfirmed.value = true
-        // Update original to merged (save succeeded, just confirm failed)
-        if (draft.value) {
-          original.value = cloneDeep(draft.value)
-          dirtyPaths.value = new Set()
-        }
-        return
+      const configPath = await getConfigPath()
+      if (await exists(configPath)) {
+        const raw = await readTextFile(configPath)
+        const stripped = stripJsonComments(raw)
+        const confirmed = JSON.parse(stripped) as OpenCodeConfig
+        original.value = confirmed
+        draft.value = cloneDeep(confirmed)
+        dirtyPaths.value = new Set()
       }
-
-      const confirmed = (await resp.json()) as OpenCodeConfig
-      original.value = confirmed
-      draft.value = cloneDeep(confirmed)
-      dirtyPaths.value = new Set()
       restartConfirmed.value = true
       phase.value = 'idle'
       stopDetection()
     } catch {
-      // Confirm failed — stay in restarting, will retry on next health poll
       restartDetected.value = false
     }
   }
@@ -352,12 +293,11 @@ export const useConfigStore = defineStore('config', () => {
   function stopDetection() {
     if (healthPollInterval) { clearInterval(healthPollInterval); healthPollInterval = null }
     if (progressTimer) { clearInterval(progressTimer); progressTimer = null }
-    if (timeoutId.value) { clearTimeout(timeoutId.value); timeoutId.value = null }
-    if (absoluteTimeoutId.value) { clearTimeout(absoluteTimeoutId.value); absoluteTimeoutId.value = null }
+    if (timeoutId) { clearTimeout(timeoutId); timeoutId = null }
+    if (absoluteTimeoutId) { clearTimeout(absoluteTimeoutId); absoluteTimeoutId = null }
   }
 
   function retryDetection() {
-    // Only restart detection, don't re-PATCH
     if (phase.value !== 'timeout') return
     phase.value = 'restarting'
     restartDetected.value = false
@@ -368,7 +308,7 @@ export const useConfigStore = defineStore('config', () => {
       restartElapsed.value = Date.now() - restartStartTime.value
     }, 100)
 
-    timeoutId.value = setTimeout(() => {
+    timeoutId = setTimeout(() => {
       if (phase.value === 'restarting') phase.value = 'timeout'
     }, 90_000)
 
@@ -376,7 +316,6 @@ export const useConfigStore = defineStore('config', () => {
   }
 
   function resetToSavedAfterTimeout() {
-    // Restore draft to last saved version (server already saved merged)
     if (original.value) {
       draft.value = cloneDeep(original.value)
       dirtyPaths.value = new Set()
@@ -411,49 +350,20 @@ export const useConfigStore = defineStore('config', () => {
 
   function hidePanel() {
     panelOpen.value = false
-    // Does NOT clear draft — for restart-period close, preserves draft for read-only display
   }
 
   // ── Computed ─────────────────────────────────────────────────────────────
 
   const isDirty = computed(() => dirtyPaths.value.size > 0)
-
   const dirtyCount = computed(() => dirtyPaths.value.size)
 
   return {
-    // State
-    original,
-    draft,
-    phase,
-    activeSection,
-    panelOpen,
-    targetUrl,
-    restartStartTime,
-    timeoutId,
-    absoluteTimeoutId,
-    restartElapsed,
-    restartDetected,
-    restartConfirmed,
-    pendingDismiss,
-    pendingSave,
-    pendingConnectNewUrl,
-    lastError,
-    dirtyPaths,
-    // Computed
-    isDirty,
-    dirtyCount,
-    // Actions
-    setTargetUrl,
-    fetchConfig,
-    saveConfig,
-    resetToSaved,
-    requestDismiss,
-    cancelDismiss,
-    forceDismiss,
-    hidePanel,
-    retryDetection,
-    resetToSavedAfterTimeout,
-    stopDetection,
+    original, draft, phase, activeSection, panelOpen, targetUrl,
+    restartStartTime, restartElapsed, restartDetected, restartConfirmed,
+    pendingDismiss, pendingSave, pendingConnectNewUrl, lastError, dirtyPaths,
+    isDirty, dirtyCount,
+    setTargetUrl, fetchConfig, saveConfig, resetToSaved,
+    requestDismiss, cancelDismiss, forceDismiss, hidePanel,
+    retryDetection, resetToSavedAfterTimeout, stopDetection,
   }
 })
-

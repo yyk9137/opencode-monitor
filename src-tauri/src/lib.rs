@@ -85,6 +85,7 @@ pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_http::init())
+        .plugin(tauri_plugin_fs::init())
         .invoke_handler(tauri::generate_handler![get_cli_args, discover_opencode_ports])
         .setup(|app| {
             // Open devtools automatically in debug builds for diagnostics

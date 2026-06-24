@@ -11,6 +11,19 @@
     "core:window:allow-unmaximize",
     "core:window:allow-is-maximized",
     "opener:default",
+    "fs:default",
+    {
+      "identifier": "fs:allow-read-text-file",
+      "allow": [{ "path": "$HOME/.config/opencode/*" }]
+    },
+    {
+      "identifier": "fs:allow-write-text-file",
+      "allow": [{ "path": "$HOME/.config/opencode/*" }]
+    },
+    {
+      "identifier": "fs:allow-exists",
+      "allow": [{ "path": "$HOME/.config/opencode/*" }]
+    },
     {
       "identifier": "http:default",
       "allow": [

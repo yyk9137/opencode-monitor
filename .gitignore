@@ -18,3 +18,7 @@ Thumbs.db
 
 # Logs
 *.log
+
+# OpenCode project-level config (written by PATCH /config)
+config.json
+
