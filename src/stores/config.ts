@@ -27,6 +27,12 @@ export interface DiffPath {
   newValue: unknown
 }
 
+// ── Deep clone that handles Vue reactive proxies (structuredClone fails on them) ─
+function cloneDeep<T>(value: T): T {
+  if (value === null || value === undefined) return value
+  return JSON.parse(JSON.stringify(value))
+}
+
 /**
  * Compute leaf-path diffs between original and draft.
  * Arrays are treated as replace (not merge) — mergeArrays: false.
@@ -60,15 +66,15 @@ export function computeDiff(original: unknown, draft: unknown, path: (string | n
  * mergeArrays: false — arrays are replaced, not concatenated.
  */
 export function applyDiff(fresh: unknown, diffs: DiffPath[]): unknown {
-  if (diffs.length === 0) return structuredClone(fresh)
+  if (diffs.length === 0) return cloneDeep(fresh)
 
   // Deep clone fresh so we don't mutate it
-  const result = structuredClone(fresh)
+  const result = cloneDeep(fresh)
 
   for (const diff of diffs) {
     if (diff.path.length === 0) {
       // Root replacement
-      return structuredClone(diff.newValue)
+      return cloneDeep(diff.newValue)
     }
 
     // Navigate to parent
@@ -88,7 +94,7 @@ export function applyDiff(fresh: unknown, diffs: DiffPath[]): unknown {
       if (diff.newValue === undefined) {
         delete parent[lastKey]
       } else {
-        parent[lastKey] = structuredClone(diff.newValue)
+        parent[lastKey] = cloneDeep(diff.newValue)
       }
     }
   }
@@ -168,7 +174,7 @@ export const useConfigStore = defineStore('config', () => {
 
       const config = (await response.json()) as OpenCodeConfig
       original.value = config
-      draft.value = structuredClone(config)
+      draft.value = cloneDeep(config)
       dirtyPaths.value = new Set()
       phase.value = 'idle'
       return true
@@ -318,7 +324,7 @@ export const useConfigStore = defineStore('config', () => {
         restartConfirmed.value = true
         // Update original to merged (save succeeded, just confirm failed)
         if (draft.value) {
-          original.value = structuredClone(draft.value)
+          original.value = cloneDeep(draft.value)
           dirtyPaths.value = new Set()
         }
         return
@@ -326,7 +332,7 @@ export const useConfigStore = defineStore('config', () => {
 
       const confirmed = (await resp.json()) as OpenCodeConfig
       original.value = confirmed
-      draft.value = structuredClone(confirmed)
+      draft.value = cloneDeep(confirmed)
       dirtyPaths.value = new Set()
       restartConfirmed.value = true
       phase.value = 'idle'
@@ -366,7 +372,7 @@ export const useConfigStore = defineStore('config', () => {
   function resetToSavedAfterTimeout() {
     // Restore draft to last saved version (server already saved merged)
     if (original.value) {
-      draft.value = structuredClone(original.value)
+      draft.value = cloneDeep(original.value)
       dirtyPaths.value = new Set()
     }
     stopDetection()
@@ -375,7 +381,7 @@ export const useConfigStore = defineStore('config', () => {
 
   function resetToSaved() {
     if (!original.value) return
-    draft.value = structuredClone(original.value)
+    draft.value = cloneDeep(original.value)
     dirtyPaths.value = new Set()
   }
 
@@ -444,3 +450,4 @@ export const useConfigStore = defineStore('config', () => {
     stopDetection,
   }
 })
+
