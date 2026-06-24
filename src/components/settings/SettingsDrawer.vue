@@ -2,6 +2,8 @@
 import { Settings, ChevronRight, RotateCcw, Loader2 } from 'lucide-vue-next'
 import { useConfigStore } from '@/stores/config'
 import InstanceSelector from './InstanceSelector.vue'
+import ModelsSection from './sections/ModelsSection.vue'
+import GeneralSection from './sections/GeneralSection.vue'
 
 const configStore = useConfigStore()
 
@@ -91,11 +93,11 @@ function handleKeydown(e: KeyboardEvent) {
         </nav>
 
         <div class="drawer-content">
-          <!-- Section content will be rendered here in steps 4-11 -->
-          <div class="section-placeholder">
+          <ModelsSection v-if="configStore.activeSection === 'models'" />
+          <GeneralSection v-else-if="configStore.activeSection === 'general'" />
+          <div v-else class="section-placeholder">
             <Settings :size="32" />
-            <p>Settings panel — step {{ configStore.activeSection }}</p>
-            <p class="placeholder-hint">Section content will be implemented in steps 4-11.</p>
+            <p>{{ configStore.activeSection }} — coming in steps 7-11</p>
           </div>
         </div>
       </div>
