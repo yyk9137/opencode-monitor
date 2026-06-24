@@ -1,6 +1,5 @@
 <script setup lang="ts">
 import { computed, ref } from 'vue'
-import { fetch } from '@tauri-apps/plugin-http'
 import { ChevronDown, ChevronRight, Plus, Trash2, RefreshCw, Loader2 } from 'lucide-vue-next'
 import { useConfigStore } from '@/stores/config'
 
@@ -184,8 +183,9 @@ async function importModelsFromServer(providerId: string) {
 
   try {
     // OpenAI-compatible /v1/models endpoint
+    // Use window.fetch (not Tauri's fetch) to avoid scope/permission issues with external URLs
     const url = baseURL.replace(/\/$/, '') + '/models'
-    const resp = await fetch(url, {
+    const resp = await window.fetch(url, {
       headers: { 'Authorization': 'Bearer ' + apiKey },
     })
 
