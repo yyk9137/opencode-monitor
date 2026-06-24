@@ -2,6 +2,7 @@
 import { Settings, ChevronRight, RotateCcw, Loader2 } from 'lucide-vue-next'
 import { useConfigStore } from '@/stores/config'
 import InstanceSelector from './InstanceSelector.vue'
+import RestartOverlay from './RestartOverlay.vue'
 import ModelsSection from './sections/ModelsSection.vue'
 import GeneralSection from './sections/GeneralSection.vue'
 
@@ -29,6 +30,10 @@ function handleClose() {
     configStore.forceDismiss()
     // Focus restore handled by App.vue watch on panelOpen
   }
+}
+
+async function handleSave() {
+  await configStore.saveConfig()
 }
 
 function handleKeydown(e: KeyboardEvent) {
@@ -67,9 +72,9 @@ function handleKeydown(e: KeyboardEvent) {
         <InstanceSelector />
       </div>
 
-      <!-- Restart banner (step-5 will fill this in) -->
+      <!-- Restart banner -->
       <div class="drawer-restart-banner">
-        <!-- RestartOverlay goes here in step-5 -->
+        <RestartOverlay />
       </div>
 
       <!-- Body: nav + content -->
@@ -122,6 +127,7 @@ function handleKeydown(e: KeyboardEvent) {
           <button
             class="btn-save"
             :disabled="!configStore.isDirty || configStore.phase !== 'idle'"
+            @click="handleSave"
           >
             <Loader2 v-if="configStore.phase !== 'idle'" :size="12" class="animate-spin" />
             保存并重启
