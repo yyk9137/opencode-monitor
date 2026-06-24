@@ -37,6 +37,7 @@ import {
 } from 'lucide-vue-next'
 import FileIcon from '@/components/FileIcon.vue'
 import MarkdownContent from '@/components/MarkdownContent.vue'
+import DiffViewer from '@/components/DiffViewer.vue'
 import '@/assets/markdown.css'
 import type { Component } from 'vue'
 import { useSessionStore } from '@/stores/session'
@@ -1306,19 +1307,19 @@ function toolOutputText(state: ToolPart['state'] | undefined): string {
         </header>
 
         <ul v-if="diffFiles.length > 0" class="diff-list">
-          <li
-            v-for="file in diffFiles"
-            :key="file.path"
-            class="diff-row"
-            :data-status="file.status"
-          >
-            <span class="diff-status" :data-status="file.status" />
-            <span class="diff-path">{{ file.path }}</span>
-            <span class="diff-stats">
-              <span class="diff-additions">+{{ file.additions }}</span>
-              <span class="diff-deletions">-{{ file.deletions }}</span>
-            </span>
-          </li>
+          <template v-for="file in diffFiles" :key="file.path">
+            <li class="diff-row" :data-status="file.status">
+              <span class="diff-status" :data-status="file.status" />
+              <span class="diff-path">{{ file.path }}</span>
+              <span class="diff-stats">
+                <span class="diff-additions">+{{ file.additions }}</span>
+                <span class="diff-deletions">-{{ file.deletions }}</span>
+              </span>
+            </li>
+            <li v-if="file.content" class="diff-content">
+              <DiffViewer :content="file.content" />
+            </li>
+          </template>
         </ul>
         <p v-else class="empty-hint" style="padding: var(--space-24);">No file changes.</p>
       </div>
@@ -2674,6 +2675,12 @@ function toolOutputText(state: ToolPart['state'] | undefined): string {
 
 .diff-row:hover {
   background: var(--bg-hover);
+}
+
+.diff-content {
+  padding: 0 var(--space-24) var(--space-12);
+  border-bottom: 1px solid var(--border-variant);
+  background: var(--bg-editor);
 }
 
 .diff-status {
