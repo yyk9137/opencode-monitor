@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed } from 'vue'
-import { ChevronRight, RotateCcw, Loader2 } from 'lucide-vue-next'
+import { ChevronRight, RotateCcw, Loader2, AlertCircle } from 'lucide-vue-next'
 import { useConfigStore } from '@/stores/config'
 import InstanceSelector from './InstanceSelector.vue'
 import RestartOverlay from './RestartOverlay.vue'
@@ -34,7 +34,11 @@ function handleClose() {
 }
 
 async function handleSave() {
-  await configStore.saveConfig()
+  const success = await configStore.saveConfig()
+  if (!success) {
+    // Error is stored in configStore.lastError — displayed in the drawer
+    console.error('[handleSave] saveConfig failed:', configStore.lastError)
+  }
 }
 
 // ── Confirm dialog props ────────────────────────────────────────────────
@@ -114,6 +118,13 @@ function handleKeydown(e: KeyboardEvent) {
       <!-- Restart banner -->
       <div class="drawer-restart-banner" :inert="configStore.pendingDismiss !== null">
         <RestartOverlay />
+      </div>
+
+      <!-- Error banner -->
+      <div v-if="configStore.lastError && configStore.phase === 'idle'" class="drawer-error-banner">
+        <AlertCircle :size="12" />
+        <span>{{ configStore.lastError.message }}</span>
+        <button class="error-dismiss" @click="configStore.lastError = null">×</button>
       </div>
 
       <!-- Body: nav + content -->
@@ -260,6 +271,30 @@ function handleKeydown(e: KeyboardEvent) {
   flex-shrink: 0;
   min-height: 0;
 }
+
+/* ── Error banner ──────────────────────────────────────────────────────── */
+.drawer-error-banner {
+  display: flex;
+  align-items: center;
+  gap: var(--space-6);
+  padding: var(--space-6) var(--space-12);
+  background: rgba(217, 87, 87, 0.1);
+  border-bottom: 1px solid var(--error);
+  color: var(--error);
+  font-size: var(--font-size-ui);
+  flex-shrink: 0;
+}
+
+.error-dismiss {
+  margin-left: auto;
+  border: none;
+  background: transparent;
+  color: var(--error);
+  cursor: pointer;
+  font-size: 16px;
+  padding: 0 4px;
+}
+.error-dismiss:hover { opacity: 0.7; }
 
 /* ── Body ─────────────────────────────────────────────────────────────── */
 .drawer-body {

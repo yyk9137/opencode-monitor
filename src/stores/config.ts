@@ -181,7 +181,9 @@ export const useConfigStore = defineStore('config', () => {
 
   async function saveConfig(): Promise<boolean> {
     if (phase.value !== 'idle') return false
-    if (!targetUrl.value || !original.value || !draft.value) return false
+    if (!targetUrl.value) { console.error('[saveConfig] No targetUrl'); return false }
+    if (!original.value) { console.error('[saveConfig] No original (fetchConfig not called?)'); return false }
+    if (!draft.value) { console.error('[saveConfig] No draft'); return false }
 
     phase.value = 'saving'
     lastError.value = null
@@ -198,24 +200,30 @@ export const useConfigStore = defineStore('config', () => {
 
       // Step 2: Compute user diffs (only leaf paths the user touched)
       const userDiff = computeDiff(original.value, draft.value)
+      console.log('[saveConfig] userDiff count:', userDiff.length, userDiff.slice(0, 5))
 
       // Step 3: Apply diffs onto fresh tree
       const merged = applyDiff(freshTree, userDiff) as OpenCodeConfig
+      console.log('[saveConfig] merged provider keys:', Object.keys(merged.provider || {}))
 
       // Step 4: AJV validate
       const validation = validateConfig(merged)
       if (!validation.valid) {
+        console.error('[saveConfig] AJV validation failed:', validation.errors)
         phase.value = 'idle'
         lastError.value = { at: Date.now(), phase: 'saving', message: `Validation failed: ${validation.errors.join('; ')}` }
         return false
       }
+      console.log('[saveConfig] AJV validation passed')
 
       // Step 5: PATCH /config (full merged tree)
+      console.log('[saveConfig] PATCHing to', targetUrl.value + '/config')
       const patchResp = await fetch(`${targetUrl.value}/config`, {
         method: 'PATCH',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(merged),
       })
+      console.log('[saveConfig] PATCH response:', patchResp.status, patchResp.ok)
       if (!patchResp.ok) {
         phase.value = 'idle'
         lastError.value = { at: Date.now(), phase: 'saving', message: `PATCH /config failed: ${patchResp.status}` }
