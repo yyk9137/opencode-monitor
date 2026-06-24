@@ -29,9 +29,9 @@ const KNOWN_PROVIDERS = [
 const selectedKnownProvider = ref('')
 const customId = ref('')
 
-// ── Model import types ──────────────────────────────────────────────────────
-interface RemoteModel { id: string; name?: string }
-interface RemoteProvider { id: string; name?: string; models?: RemoteModel[] }
+// ── Model import types (unused now, kept for reference) ──────────────────
+// interface RemoteModel { id: string; name?: string }
+// interface RemoteProvider { id: string; name?: string; models?: RemoteModel[] }
 
 // ── Config providers ────────────────────────────────────────────────────────
 const providers = computed(() => {
@@ -147,51 +147,66 @@ function removeModel(providerId: string, modelId: string) {
   configStore.dirtyPaths.add(`provider.${providerId}.models.${modelId}`)
 }
 
-// ── Import models from server (per-provider, direct fetch) ──────────────
+// ── Import models from upstream provider (direct API call) ──────────────
 const importLoading = ref<Set<string>>(new Set())
 const importMessages = ref<Record<string, string>>({})
 const importErrors = ref<Record<string, string>>({})
 
 async function importModelsFromServer(providerId: string) {
-  if (!configStore.targetUrl) return
+  if (!configStore.draft?.provider?.[providerId]) return
+
+  const config = configStore.draft.provider[providerId]
+  const baseURL = config.options?.baseURL as string | undefined
+  const apiKey = apiKeyInputs.value[providerId] || (config.options?.apiKey as string | undefined)
+
+  if (!baseURL) {
+    importErrors.value[providerId] = 'Base URL is required to fetch models.'
+    return
+  }
+  if (!apiKey) {
+    importErrors.value[providerId] = 'API Key is required to fetch models.'
+    return
+  }
+
   importLoading.value.add(providerId)
   importErrors.value[providerId] = ''
   importMessages.value[providerId] = ''
 
   try {
-    const resp = await fetch(`${configStore.targetUrl}/provider`)
+    // OpenAI-compatible /v1/models endpoint
+    const url = baseURL.replace(/\/$/, '') + '/models'
+    const resp = await fetch(url, {
+      headers: { 'Authorization': 'Bearer ' + apiKey },
+    })
+
     if (!resp.ok) {
-      importErrors.value[providerId] = `GET /provider failed: ${resp.status}`
-      return
-    }
-    const data = await resp.json() as { all: RemoteProvider[] }
-    const remote = (data.all || []).find(p => p.id === providerId)
-
-    if (!remote) {
-      importErrors.value[providerId] = 'Provider "' + providerId + '" not found on server. Save & restart first.'
-      return
-    }
-    if (!remote.models || remote.models.length === 0) {
-      importErrors.value[providerId] = 'No models returned from server.'
+      importErrors.value[providerId] = 'GET ' + url + ' failed: ' + resp.status
       return
     }
 
-    if (!configStore.draft?.provider?.[providerId]) return
+    const data = await resp.json() as { data?: Array<{ id: string; object?: string }> }
+    const models = data.data || []
+
+    if (models.length === 0) {
+      importErrors.value[providerId] = 'No models returned from provider.'
+      return
+    }
+
     if (!configStore.draft.provider[providerId].models) {
       configStore.draft.provider[providerId].models = {}
     }
     let added = 0
-    for (const m of remote.models) {
+    for (const m of models) {
       if (!configStore.draft.provider[providerId].models![m.id]) {
         configStore.draft.provider[providerId].models![m.id] = {
           id: m.id,
-          name: m.name || m.id,
+          name: m.id,
         }
         added++
       }
     }
     configStore.dirtyPaths.add('provider.' + providerId + '.models')
-    importMessages.value[providerId] = 'Imported ' + added + ' model' + (added !== 1 ? 's' : '') + '.'
+    importMessages.value[providerId] = 'Imported ' + added + ' model' + (added !== 1 ? 's' : '') + ' from upstream.'
   } catch (e) {
     importErrors.value[providerId] = String(e)
   } finally {
@@ -238,15 +253,6 @@ const newModelId = ref<Record<string, string>>({})
         <div class="form-row">
           <label class="form-label">Display Name</label>
           <input :value="config.name ?? ''" type="text" class="form-input" @input="updateProvider(id, 'name', ($event.target as HTMLInputElement).value || undefined)" />
-        </div>
-
-        <!-- Timeout -->
-        <div class="form-row">
-          <label class="form-label">Timeout (ms)</label>
-          <div class="number-false-row">
-            <input :value="typeof config.options?.timeout === 'number' ? config.options.timeout : ''" type="number" min="1" class="form-input" :disabled="config.options?.timeout === false" @input="updateOptions(id, 'timeout', Number(($event.target as HTMLInputElement).value) || undefined)" />
-            <label class="checkbox-label"><input type="checkbox" :checked="config.options?.timeout === false" @change="updateOptions(id, 'timeout', ($event.target as HTMLInputElement).checked ? false : undefined)" /><span>Disable</span></label>
-          </div>
         </div>
 
         <!-- Models section (inside provider edit) -->
