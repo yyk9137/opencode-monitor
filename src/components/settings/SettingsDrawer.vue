@@ -1,8 +1,10 @@
 <script setup lang="ts">
+import { computed } from 'vue'
 import { Settings, ChevronRight, RotateCcw, Loader2 } from 'lucide-vue-next'
 import { useConfigStore } from '@/stores/config'
 import InstanceSelector from './InstanceSelector.vue'
 import RestartOverlay from './RestartOverlay.vue'
+import ConfirmDialog from './ConfirmDialog.vue'
 import ModelsSection from './sections/ModelsSection.vue'
 import GeneralSection from './sections/GeneralSection.vue'
 
@@ -36,10 +38,48 @@ async function handleSave() {
   await configStore.saveConfig()
 }
 
+// ── Confirm dialog props ────────────────────────────────────────────────
+const dialogTitle = computed(() => {
+  const r = configStore.pendingDismiss
+  if (r?.kind === 'switch-instance') return '切换实例前保存更改？'
+  return '未保存的更改'
+})
+
+const dialogBody = computed(() => {
+  const r = configStore.pendingDismiss
+  const count = configStore.dirtyCount
+  if (r?.kind === 'switch-instance') {
+    return [`您有 ${count} 个未保存的更改。`, '保存并切换到新实例，或放弃更改。']
+  }
+  return [`您有 ${count} 个未保存的更改。`, '保存并重启 OpenCode，或放弃更改。']
+})
+
+const dialogSaveLabel = computed(() => {
+  const r = configStore.pendingDismiss
+  if (r?.kind === 'switch-instance') return '保存并切换'
+  return '保存并重启'
+})
+
+function handleDialogCancel() {
+  configStore.cancelDismiss()
+}
+
+function handleDialogDiscard() {
+  configStore.forceDismiss()
+}
+
+async function handleDialogSave(): Promise<boolean> {
+  return await configStore.saveConfig()
+}
+
 function handleKeydown(e: KeyboardEvent) {
   if (e.key === 'Escape' && !e.defaultPrevented) {
     e.preventDefault()
     e.stopPropagation()
+    if (configStore.pendingDismiss !== null) {
+      // Dialog handles its own Escape
+      return
+    }
     handleClose()
   }
 }
@@ -56,7 +96,7 @@ function handleKeydown(e: KeyboardEvent) {
       @keydown="handleKeydown"
     >
       <!-- Header -->
-      <div class="drawer-header">
+      <div class="drawer-header" :inert="configStore.pendingDismiss !== null">
         <span class="drawer-title">Settings</span>
         <button
           class="drawer-close-btn"
@@ -68,18 +108,18 @@ function handleKeydown(e: KeyboardEvent) {
       </div>
 
       <!-- Instance bar -->
-      <div class="drawer-instance-bar">
+      <div class="drawer-instance-bar" :inert="configStore.pendingDismiss !== null">
         <InstanceSelector />
       </div>
 
       <!-- Restart banner -->
-      <div class="drawer-restart-banner">
+      <div class="drawer-restart-banner" :inert="configStore.pendingDismiss !== null">
         <RestartOverlay />
       </div>
 
       <!-- Body: nav + content -->
       <div class="drawer-body">
-        <nav class="drawer-nav">
+        <nav class="drawer-nav" :inert="configStore.pendingDismiss !== null">
           <button
             v-for="section in navSections"
             :key="section.id"
@@ -97,7 +137,7 @@ function handleKeydown(e: KeyboardEvent) {
           </button>
         </nav>
 
-        <div class="drawer-content">
+        <div class="drawer-content" :inert="configStore.pendingDismiss !== null">
           <ModelsSection v-if="configStore.activeSection === 'models'" />
           <GeneralSection v-else-if="configStore.activeSection === 'general'" />
           <div v-else class="section-placeholder">
@@ -108,7 +148,7 @@ function handleKeydown(e: KeyboardEvent) {
       </div>
 
       <!-- Footer: save bar -->
-      <div class="drawer-footer">
+      <div class="drawer-footer" :inert="configStore.pendingDismiss !== null">
         <div class="save-status">
           <span v-if="configStore.isDirty" class="status-dirty">
             {{ configStore.dirtyCount }} 个未保存字段
@@ -136,6 +176,17 @@ function handleKeydown(e: KeyboardEvent) {
       </div>
     </div>
   </Transition>
+
+  <!-- Confirm dialog (sibling of drawer, not child, to avoid :inert propagation) -->
+  <ConfirmDialog
+    v-if="configStore.pendingDismiss !== null"
+    :title="dialogTitle"
+    :body-lines="dialogBody"
+    :save-label="dialogSaveLabel"
+    :on-cancel="handleDialogCancel"
+    :on-discard="handleDialogDiscard"
+    :on-save-and-continue="handleDialogSave"
+  />
 </template>
 
 <style scoped>
