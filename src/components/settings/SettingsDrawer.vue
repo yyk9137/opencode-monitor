@@ -2,6 +2,7 @@
 import { ref } from 'vue'
 import { Settings, ChevronRight, RotateCcw, Loader2 } from 'lucide-vue-next'
 import { useConfigStore } from '@/stores/config'
+import InstanceSelector from './InstanceSelector.vue'
 
 const configStore = useConfigStore()
 
@@ -63,9 +64,9 @@ function handleKeydown(e: KeyboardEvent) {
         </button>
       </div>
 
-      <!-- Instance bar (step-3 will fill this in) -->
+      <!-- Instance bar -->
       <div class="drawer-instance-bar">
-        <!-- InstanceSelector goes here in step-3 -->
+        <InstanceSelector />
       </div>
 
       <!-- Restart banner (step-5 will fill this in) -->
