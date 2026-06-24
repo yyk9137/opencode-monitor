@@ -1,0 +1,144 @@
+/* Markdown rendering styles — scoped under .markdown-content */
+/* marked-only: markdown formatting WITHOUT syntax highlighting */
+
+.markdown-content {
+  font-size: 13px;
+  line-height: 1.6;
+  color: var(--text-primary);
+  word-break: break-word;
+}
+
+.markdown-content > *:first-child {
+  margin-top: 0;
+}
+
+.markdown-content > *:last-child {
+  margin-bottom: 0;
+}
+
+/* Headings */
+.markdown-content h1,
+.markdown-content h2,
+.markdown-content h3,
+.markdown-content h4,
+.markdown-content h5,
+.markdown-content h6 {
+  font-size: 13px;
+  font-weight: 600;
+  margin-top: 16px;
+  margin-bottom: 8px;
+  color: var(--text-primary);
+}
+
+.markdown-content p {
+  margin-bottom: 8px;
+}
+
+/* Lists */
+.markdown-content ul,
+.markdown-content ol {
+  padding-left: 24px;
+  margin-bottom: 8px;
+  list-style-position: outside;
+}
+
+.markdown-content li {
+  margin-bottom: 2px;
+}
+
+.markdown-content ul ul,
+.markdown-content ol ol,
+.markdown-content ul ol,
+.markdown-content ol ul {
+  margin-bottom: 0;
+}
+
+/* Blockquotes */
+.markdown-content blockquote {
+  border-left: 2px solid var(--border);
+  padding-left: 12px;
+  color: var(--text-muted);
+  margin-bottom: 8px;
+  font-style: italic;
+}
+
+/* Links */
+.markdown-content a {
+  color: var(--text-accent);
+  text-decoration: none;
+}
+
+.markdown-content a:hover {
+  text-decoration: underline;
+}
+
+/* Horizontal rule */
+.markdown-content hr {
+  border: none;
+  margin: 16px 0;
+  height: 0;
+}
+
+/* Code blocks — no syntax highlighting, just visual distinction */
+.markdown-content pre {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 12px;
+  overflow-x: auto;
+  margin-bottom: 8px;
+  font-size: 12px;
+  line-height: 1.5;
+  font-family: 'JetBrains Mono', 'Fira Code', 'Cascadia Code', 'Consolas', monospace;
+}
+
+.markdown-content pre code {
+  background: transparent;
+  padding: 0;
+  border-radius: 0;
+  font-size: inherit;
+  color: inherit;
+}
+
+/* Inline code */
+.markdown-content :not(pre) > code {
+  font-family: 'JetBrains Mono', 'Fira Code', 'Cascadia Code', 'Consolas', monospace;
+  font-size: 12px;
+  background: var(--surface);
+  color: var(--text-accent);
+  padding: 1px 4px;
+  border-radius: 3px;
+  font-weight: 500;
+}
+
+/* Tables */
+.markdown-content table {
+  width: 100%;
+  border-collapse: collapse;
+  margin-bottom: 8px;
+  display: block;
+  overflow-x: auto;
+}
+
+.markdown-content th,
+.markdown-content td {
+  border: 1px solid var(--border);
+  padding: 6px 10px;
+  text-align: left;
+}
+
+.markdown-content th {
+  background: var(--surface);
+  font-weight: 600;
+}
+
+/* Images */
+.markdown-content img {
+  max-width: 100%;
+  border-radius: 4px;
+}
+
+/* Task lists */
+.markdown-content input[type="checkbox"] {
+  margin-right: 6px;
+}

@@ -36,6 +36,8 @@ import {
   XCircle,
 } from 'lucide-vue-next'
 import FileIcon from '@/components/FileIcon.vue'
+import MarkdownContent from '@/components/MarkdownContent.vue'
+import '@/assets/markdown.css'
 import type { Component } from 'vue'
 import { useSessionStore } from '@/stores/session'
 import { useSessionActions } from '@/composables/useSessionActions'
@@ -956,12 +958,13 @@ function toolOutputText(state: ToolPart['state'] | undefined): string {
 
             <div class="part-body">
               <!-- ─── Text ─────────────────────────────────────── -->
-              <pre
+              <MarkdownContent
                 v-if="part.type === 'text' && !isTaskResultText(part)"
                 class="text-part"
                 :class="{ 'text-part--reverted': revertedMessageIds.has(part.messageID) }"
                 :data-synthetic="(part as TextPart).synthetic ? 'true' : 'false'"
-              >{{ stripSystemInjections((part as TextPart).text || '') }}</pre>
+                :text="stripSystemInjections((part as TextPart).text || '')"
+              />
 
               <!-- ─── Task result (text containing <task> XML) ──── -->
               <div
@@ -982,7 +985,7 @@ function toolOutputText(state: ToolPart['state'] | undefined): string {
                   <span class="task-result-summary">{{ taskResultSummary(stripSystemInjections((part as TextPart).text || '')) }}</span>
                 </button>
                 <div v-show="expandedTaskResults.has(part.id)" class="task-result-body">
-                  <pre>{{ taskResultBody(stripSystemInjections((part as TextPart).text || '')) }}</pre>
+                  <MarkdownContent :text="taskResultBody(stripSystemInjections((part as TextPart).text || ''))" />
                 </div>
               </div>
 
@@ -1017,7 +1020,7 @@ function toolOutputText(state: ToolPart['state'] | undefined): string {
                   v-if="expandedToolBodies.has(part.id) && ((part as ToolPart).state?.output || (part as ToolPart).state?.error)"
                   class="tool-body"
                 >
-                  <pre>{{ toolOutputText((part as ToolPart).state) }}</pre>
+                  <MarkdownContent :text="toolOutputText((part as ToolPart).state)" />
                 </div>
               </div>
 
@@ -1069,7 +1072,7 @@ function toolOutputText(state: ToolPart['state'] | undefined): string {
                       :data-type="childPart.type"
                     >
                       <template v-if="childPart.type === 'text'">
-                        <pre class="child-text">{{ stripSystemInjections((childPart as TextPart).text || '').slice(-240) }}</pre>
+                        <MarkdownContent class="child-text" :text="stripSystemInjections((childPart as TextPart).text || '').slice(-240)" />
                       </template>
                       <template v-else-if="childPart.type === 'tool'">
                         <span class="child-tool">
@@ -1088,7 +1091,7 @@ function toolOutputText(state: ToolPart['state'] | undefined): string {
                     </li>
                   </ul>
                   <!-- If no child parts, show the task tool's own output (result summary) -->
-                  <pre v-else-if="toolOutputText((part as ToolPart).state)" class="child-text task-result">{{ toolOutputText((part as ToolPart).state) }}</pre>
+                  <MarkdownContent v-else-if="toolOutputText((part as ToolPart).state)" class="child-text task-result" :text="toolOutputText((part as ToolPart).state)" />
                   <p v-else class="child-empty muted small">
                     No output yet.
                   </p>
@@ -1110,7 +1113,7 @@ function toolOutputText(state: ToolPart['state'] | undefined): string {
                   <span>Thinking {{ reasoningDurationLabel(part as ReasoningPart) }}</span>
                 </button>
                 <div v-show="expandedReasoning.has(part.id)" class="thinking-body">
-                  <pre>{{ (part as ReasoningPart).text || '' }}</pre>
+                  <MarkdownContent :text="(part as ReasoningPart).text || ''" />
                 </div>
               </div>
 
@@ -2046,11 +2049,9 @@ function toolOutputText(state: ToolPart['state'] | undefined): string {
 /* ─── Text part ─────────────────────────────────────────────────────── */
 
 .text-part {
-  font-family: var(--font-mono);
   font-size: var(--font-size-code);
   line-height: 1.55;
   color: var(--text-primary);
-  white-space: pre-wrap;
   word-break: break-word;
   margin: 0;
   padding: var(--space-6) var(--space-12);
