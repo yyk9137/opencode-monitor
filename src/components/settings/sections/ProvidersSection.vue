@@ -80,16 +80,22 @@ function startAddProvider() {
 function confirmAddProvider() {
   let id = ''
   let name = ''
+  let api = ''
 
   if (selectedKnownProvider.value === 'custom') {
     id = customId.value.trim()
     if (!id) return
     name = id
+    api = '@ai-sdk/openai-compatible'
   } else if (selectedKnownProvider.value) {
     const known = KNOWN_PROVIDERS.find(p => p.id === selectedKnownProvider.value)
     if (!known) return
     id = known.id
     name = known.name
+    // Map simple names to full SDK package names
+    if (known.api === 'anthropic') api = '@ai-sdk/anthropic'
+    else if (known.api === 'google') api = '@ai-sdk/google'
+    else api = '@ai-sdk/openai-compatible'
   } else {
     return
   }
@@ -98,8 +104,8 @@ function confirmAddProvider() {
   if (!configStore.draft.provider) configStore.draft.provider = {}
   if (configStore.draft.provider[id]) { expanded.value = id; showAddForm.value = false; return }
 
-  configStore.draft.provider[id] = { name, options: {} }
-  configStore.dirtyPaths.add(`provider.${id}`)
+  configStore.draft.provider[id] = { name, api, options: {} }
+  configStore.dirtyPaths.add('provider.' + id)
   showAddForm.value = false
   expanded.value = id
 }
@@ -265,6 +271,17 @@ const newModelId = ref<Record<string, string>>({})
         <div class="form-row">
           <label class="form-label">Display Name</label>
           <input :value="config.name ?? ''" type="text" class="form-input" @input="updateProvider(id, 'name', ($event.target as HTMLInputElement).value || undefined)" />
+        </div>
+
+        <!-- API SDK package -->
+        <div class="form-row">
+          <label class="form-label">API SDK</label>
+          <select :value="config.api ?? ''" class="form-input" @change="updateProvider(id, 'api', ($event.target as HTMLSelectElement).value || undefined)">
+            <option value="">(not set)</option>
+            <option value="@ai-sdk/openai-compatible">@ai-sdk/openai-compatible (OpenAI compatible)</option>
+            <option value="@ai-sdk/anthropic">@ai-sdk/anthropic</option>
+            <option value="@ai-sdk/google">@ai-sdk/google</option>
+          </select>
         </div>
 
         <!-- Models section (inside provider edit) -->
