@@ -1,0 +1,11 @@
+{
+  "provider": {
+    "step": {
+      "name": "step",
+      "options": {
+        "apiKey": "test",
+        "baseURL": "https://api.step.com/v1"
+      }
+    }
+  }
+}

@@ -145,6 +145,7 @@ function addModel(providerId: string, modelId: string) {
     attachment: false,
     reasoning: false,
     tool_call: true,
+    limit: { output: 8192 },
   }
   configStore.dirtyPaths.add(`provider.${providerId}.models.${modelId}`)
   expandedModel.value = `${providerId}/${modelId}`
@@ -211,6 +212,7 @@ async function importModelsFromServer(providerId: string) {
         configStore.draft.provider[providerId].models![m.id] = {
           id: m.id,
           name: m.id,
+          limit: { output: 8192 },  // required by schema — default output limit
         }
         added++
       }

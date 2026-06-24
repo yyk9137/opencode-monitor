@@ -223,16 +223,22 @@ export const useConfigStore = defineStore('config', () => {
       console.log('[saveConfig] AJV validation passed')
 
       // Step 5: PATCH /config (full merged tree)
+      const bodyStr = JSON.stringify(merged)
       console.log('[saveConfig] PATCHing to', targetUrl.value + '/config')
+      console.log('[saveConfig] PATCH body length:', bodyStr.length)
+      console.log('[saveConfig] PATCH body (first 2000 chars):', bodyStr.substring(0, 2000))
+      console.log('[saveConfig] provider keys in merged:', Object.keys(merged.provider || {}))
       const patchResp = await fetch(`${targetUrl.value}/config`, {
         method: 'PATCH',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(merged),
+        body: bodyStr,
       })
       console.log('[saveConfig] PATCH response:', patchResp.status, patchResp.ok)
       if (!patchResp.ok) {
+        const respText = await patchResp.text().catch(() => '')
+        console.error('[saveConfig] PATCH error body:', respText)
         phase.value = 'idle'
-        lastError.value = { at: Date.now(), phase: 'saving', message: `PATCH /config failed: ${patchResp.status}` }
+        lastError.value = { at: Date.now(), phase: 'saving', message: `PATCH /config failed: ${patchResp.status} — ${respText.substring(0, 500)}` }
         return false
       }
 
