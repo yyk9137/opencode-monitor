@@ -1,7 +1,7 @@
 import { defineStore } from 'pinia'
 import { ref, shallowRef, computed } from 'vue'
 import { fetch } from '@tauri-apps/plugin-http'
-import { readTextFile, writeTextFile, exists } from '@tauri-apps/plugin-fs'
+import { writeTextFile, exists } from '@tauri-apps/plugin-fs'
 import { homeDir, join } from '@tauri-apps/api/path'
 import type { OpenCodeConfig } from '@/types/opencode-config'
 
@@ -50,55 +50,7 @@ async function getConfigPath(): Promise<string> {
   return _configPath
 }
 
-// ── Strip JSONC comments (// and /* */) for parsing ──────────────────────
-function stripJsonComments(text: string): string {
-  let result = ''
-  let inString = false
-  let escaped = false
-  let i = 0
-  while (i < text.length) {
-    const char = text[i]
-    const next = text[i + 1]
-
-    if (inString) {
-      result += char
-      if (escaped) {
-        escaped = false
-      } else if (char === '\\') {
-        escaped = true
-      } else if (char === '"') {
-        inString = false
-      }
-      i++
-      continue
-    }
-
-    if (char === '"') {
-      inString = true
-      result += char
-      i++
-      continue
-    }
-
-    if (char === '/' && next === '/') {
-      // Line comment — skip to end of line
-      while (i < text.length && text[i] !== '\n') i++
-      continue
-    }
-
-    if (char === '/' && next === '*') {
-      // Block comment — skip to */
-      i += 2
-      while (i < text.length && !(text[i] === '*' && text[i + 1] === '/')) i++
-      i += 2
-      continue
-    }
-
-    result += char
-      i++
-  }
-  return result
-}
+// ── Config file path resolution (for writing) ───────────────────────────
 
 export const useConfigStore = defineStore('config', () => {
   // ── Config data ──────────────────────────────────────────────────────────
@@ -138,31 +90,23 @@ export const useConfigStore = defineStore('config', () => {
     targetUrl.value = url
   }
 
-  // ── Read config directly from file ──────────────────────────────────────
+  // ── Read config via API (merged from all sources) ───────────────────────
   async function fetchConfig(): Promise<boolean> {
     if (phase.value !== 'idle') return false
     if (pendingSave.value) return false
+    if (!targetUrl.value) return false
 
     phase.value = 'loading'
     lastError.value = null
 
     try {
-      const configPath = await getConfigPath()
-
-      if (!(await exists(configPath))) {
-        // No config file — start with empty config
-        const emptyConfig = {} as OpenCodeConfig
-        original.value = emptyConfig
-        draft.value = cloneDeep(emptyConfig)
-        dirtyPaths.value = new Set()
+      const response = await fetch(targetUrl.value + '/config')
+      if (!response.ok) {
         phase.value = 'idle'
-        return true
+        lastError.value = { at: Date.now(), phase: 'loading', message: 'GET /config failed: ' + response.status }
+        return false
       }
-
-      const raw = await readTextFile(configPath)
-      const stripped = stripJsonComments(raw)
-      const config = JSON.parse(stripped) as OpenCodeConfig
-
+      const config = (await response.json()) as OpenCodeConfig
       original.value = config
       draft.value = cloneDeep(config)
       dirtyPaths.value = new Set()
@@ -170,12 +114,12 @@ export const useConfigStore = defineStore('config', () => {
       return true
     } catch (e) {
       phase.value = 'idle'
-      lastError.value = { at: Date.now(), phase: 'loading', message: 'Failed to read config: ' + String(e) }
+      lastError.value = { at: Date.now(), phase: 'loading', message: 'Failed to fetch config: ' + String(e) }
       return false
     }
   }
 
-  // ── Save config directly to file (no API, no mergeDeep) ──────────────────
+  // ── Save config: write directly to opencode.jsonc (not API) ─────────────
   async function saveConfig(): Promise<boolean> {
     if (phase.value !== 'idle') return false
     if (!original.value || !draft.value) return false
@@ -185,7 +129,7 @@ export const useConfigStore = defineStore('config', () => {
 
     try {
       const configPath = await getConfigPath()
-      // Write the entire draft directly to the file — no merge, no API
+      // Write the entire draft directly to the user-level config file
       const jsonStr = JSON.stringify(draft.value, null, 2)
       await writeTextFile(configPath, jsonStr)
 
@@ -204,12 +148,10 @@ export const useConfigStore = defineStore('config', () => {
         restartElapsed.value = Date.now() - restartStartTime.value
       }, 100)
 
-      // 90s no-progress timeout
       timeoutId = setTimeout(() => {
         if (phase.value === 'restarting') phase.value = 'timeout'
       }, 90_000)
 
-      // 5min absolute timeout
       absoluteTimeoutId = setTimeout(() => {
         stopDetection()
         if (phase.value === 'restarting' || phase.value === 'timeout') {
@@ -222,13 +164,11 @@ export const useConfigStore = defineStore('config', () => {
         try {
           await fetch(targetUrl.value + '/instance', { method: 'DELETE' })
         } catch {
-          // Instance may not support DELETE — that's ok, user can restart manually
+          // Instance may not support DELETE — that's ok
         }
       }
 
-      // Start health polling to detect restart
       startHealthPolling()
-
       return true
     } catch (e) {
       phase.value = 'idle'
@@ -263,7 +203,6 @@ export const useConfigStore = defineStore('config', () => {
     if (restartDetected.value) return
     restartDetected.value = true
 
-    // Reset no-progress timer
     if (timeoutId) {
       clearTimeout(timeoutId)
       timeoutId = setTimeout(() => {
@@ -271,17 +210,15 @@ export const useConfigStore = defineStore('config', () => {
       }, 90_000)
     }
 
-    // Re-read config from file to confirm
+    // Re-read config via API to confirm restart
     try {
-      const configPath = await getConfigPath()
-      if (await exists(configPath)) {
-        const raw = await readTextFile(configPath)
-        const stripped = stripJsonComments(raw)
-        const confirmed = JSON.parse(stripped) as OpenCodeConfig
-        original.value = confirmed
-        draft.value = cloneDeep(confirmed)
-        dirtyPaths.value = new Set()
-      }
+      if (!targetUrl.value) return
+      const resp = await fetch(targetUrl.value + '/config')
+      if (!resp.ok) return
+      const confirmed = (await resp.json()) as OpenCodeConfig
+      original.value = confirmed
+      draft.value = cloneDeep(confirmed)
+      dirtyPaths.value = new Set()
       restartConfirmed.value = true
       phase.value = 'idle'
       stopDetection()
