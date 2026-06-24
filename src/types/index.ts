@@ -313,6 +313,9 @@ export interface FileDiff {
   additions: number
   deletions: number
   content?: string  // patch text, if available
+  // OpenCode API also returns these fields (different names):
+  file?: string     // same as path, from API
+  patch?: string   // same as content, from API — unified diff text
 }
 
 export type RevertResult = { ok: true; session: SessionV2Info } | { ok: false; error: 'busy' | 'not-found' | 'bad-request' | 'network' }

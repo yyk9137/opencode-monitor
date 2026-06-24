@@ -1307,17 +1307,17 @@ function toolOutputText(state: ToolPart['state'] | undefined): string {
         </header>
 
         <ul v-if="diffFiles.length > 0" class="diff-list">
-          <template v-for="file in diffFiles" :key="file.path">
+          <template v-for="file in diffFiles" :key="file.path || file.file">
             <li class="diff-row" :data-status="file.status">
               <span class="diff-status" :data-status="file.status" />
-              <span class="diff-path">{{ file.path }}</span>
+              <span class="diff-path">{{ file.path || file.file }}</span>
               <span class="diff-stats">
                 <span class="diff-additions">+{{ file.additions }}</span>
                 <span class="diff-deletions">-{{ file.deletions }}</span>
               </span>
             </li>
-            <li v-if="file.content" class="diff-content">
-              <DiffViewer :content="file.content" />
+            <li v-if="file.content || file.patch" class="diff-content">
+              <DiffViewer :content="file.content || file.patch" />
             </li>
           </template>
         </ul>

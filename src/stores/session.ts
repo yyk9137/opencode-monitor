@@ -541,7 +541,18 @@ export const useSessionStore = defineStore('session', () => {
       const params = messageID ? `?messageID=${encodeURIComponent(messageID)}` : ''
       const response = await fetch(`${url}/session/${sessionId}/diff${params}`)
       if (!response.ok) return []
-      return await response.json() as FileDiff[]
+      const raw = await response.json() as Array<Record<string, unknown>>
+      // Map API field names to our FileDiff interface:
+      // API uses 'file'/'patch', we use 'path'/'content'
+      return raw.map(d => ({
+        path: (d.path as string) ?? (d.file as string) ?? '',
+        status: (d.status as FileDiff['status']) ?? 'modified',
+        additions: (d.additions as number) ?? 0,
+        deletions: (d.deletions as number) ?? 0,
+        content: (d.content as string) ?? (d.patch as string) ?? undefined,
+        file: d.file as string | undefined,
+        patch: d.patch as string | undefined,
+      })) as FileDiff[]
     } catch {
       return []
     }
