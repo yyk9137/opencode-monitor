@@ -3,7 +3,6 @@ import { computed, ref } from 'vue'
 import { fetch } from '@tauri-apps/plugin-http'
 import { ChevronDown, ChevronRight, Plus, Trash2, RefreshCw, Loader2 } from 'lucide-vue-next'
 import { useConfigStore } from '@/stores/config'
-import TagInput from '../TagInput.vue'
 
 const configStore = useConfigStore()
 const expanded = ref<string | null>(null)
@@ -29,29 +28,10 @@ const KNOWN_PROVIDERS = [
 
 const selectedKnownProvider = ref('')
 const customId = ref('')
-const loadingModels = ref(false)
 
-// ── Model import from /provider ───────────────────────────────────────────
+// ── Model import types ──────────────────────────────────────────────────────
 interface RemoteModel { id: string; name?: string }
 interface RemoteProvider { id: string; name?: string; models?: RemoteModel[] }
-const remoteProviders = ref<RemoteProvider[]>([])
-const modelFetchError = ref('')
-
-async function fetchRemoteModels() {
-  if (!configStore.targetUrl) return
-  loadingModels.value = true
-  modelFetchError.value = ''
-  try {
-    const resp = await fetch(`${configStore.targetUrl}/provider`)
-    if (!resp.ok) { modelFetchError.value = `GET /provider failed: ${resp.status}`; return }
-    const data = await resp.json() as { all: RemoteProvider[] }
-    remoteProviders.value = data.all || []
-  } catch (e) {
-    modelFetchError.value = String(e)
-  } finally {
-    loadingModels.value = false
-  }
-}
 
 // ── Config providers ────────────────────────────────────────────────────────
 const providers = computed(() => {
@@ -167,22 +147,56 @@ function removeModel(providerId: string, modelId: string) {
   configStore.dirtyPaths.add(`provider.${providerId}.models.${modelId}`)
 }
 
-function importModelsFromServer(providerId: string) {
-  const remote = remoteProviders.value.find(p => p.id === providerId)
-  if (!remote?.models) return
-  if (!configStore.draft?.provider?.[providerId]) return
-  if (!configStore.draft.provider[providerId].models) {
-    configStore.draft.provider[providerId].models = {}
-  }
-  for (const m of remote.models) {
-    if (!configStore.draft.provider[providerId].models![m.id]) {
-      configStore.draft.provider[providerId].models![m.id] = {
-        id: m.id,
-        name: m.name || m.id,
+// ── Import models from server (per-provider, direct fetch) ──────────────
+const importLoading = ref<Set<string>>(new Set())
+const importMessages = ref<Record<string, string>>({})
+const importErrors = ref<Record<string, string>>({})
+
+async function importModelsFromServer(providerId: string) {
+  if (!configStore.targetUrl) return
+  importLoading.value.add(providerId)
+  importErrors.value[providerId] = ''
+  importMessages.value[providerId] = ''
+
+  try {
+    const resp = await fetch(`${configStore.targetUrl}/provider`)
+    if (!resp.ok) {
+      importErrors.value[providerId] = `GET /provider failed: ${resp.status}`
+      return
+    }
+    const data = await resp.json() as { all: RemoteProvider[] }
+    const remote = (data.all || []).find(p => p.id === providerId)
+
+    if (!remote) {
+      importErrors.value[providerId] = 'Provider "' + providerId + '" not found on server. Save & restart first.'
+      return
+    }
+    if (!remote.models || remote.models.length === 0) {
+      importErrors.value[providerId] = 'No models returned from server.'
+      return
+    }
+
+    if (!configStore.draft?.provider?.[providerId]) return
+    if (!configStore.draft.provider[providerId].models) {
+      configStore.draft.provider[providerId].models = {}
+    }
+    let added = 0
+    for (const m of remote.models) {
+      if (!configStore.draft.provider[providerId].models![m.id]) {
+        configStore.draft.provider[providerId].models![m.id] = {
+          id: m.id,
+          name: m.name || m.id,
+        }
+        added++
       }
     }
+    configStore.dirtyPaths.add('provider.' + providerId + '.models')
+    importMessages.value[providerId] = 'Imported ' + added + ' model' + (added !== 1 ? 's' : '') + '.'
+  } catch (e) {
+    importErrors.value[providerId] = String(e)
+  } finally {
+    importLoading.value.delete(providerId)
   }
-  configStore.dirtyPaths.add(`provider.${providerId}.models`)
 }
 
 const showAddModel = ref<Record<string, boolean>>({})
@@ -192,16 +206,6 @@ const newModelId = ref<Record<string, string>>({})
 <template>
   <div class="section-content">
     <h2 class="section-title">Providers</h2>
-
-    <!-- Toolbar: fetch models from server -->
-    <div class="toolbar">
-      <button class="btn-refresh" @click="fetchRemoteModels" :disabled="loadingModels">
-        <Loader2 v-if="loadingModels" :size="11" class="animate-spin" />
-        <RefreshCw v-else :size="11" />
-        Fetch models
-      </button>
-      <span v-if="modelFetchError" class="error-text">{{ modelFetchError }}</span>
-    </div>
 
     <!-- Existing providers -->
     <div v-for="{ id, config } in providers" :key="id" class="provider-card">
@@ -230,32 +234,10 @@ const newModelId = ref<Record<string, string>>({})
           <input :value="config.options?.baseURL ?? ''" type="text" class="form-input" placeholder="https://api.example.com" @input="updateOptions(id, 'baseURL', ($event.target as HTMLInputElement).value || undefined)" />
         </div>
 
-        <!-- API / NPM / Name -->
-        <div class="form-row">
-          <label class="form-label">API Package</label>
-          <input :value="config.api ?? ''" type="text" class="form-input" placeholder="@anthropic-ai/sdk" @input="updateProvider(id, 'api', ($event.target as HTMLInputElement).value || undefined)" />
-        </div>
-        <div class="form-row">
-          <label class="form-label">NPM Package</label>
-          <input :value="config.npm ?? ''" type="text" class="form-input" @input="updateProvider(id, 'npm', ($event.target as HTMLInputElement).value || undefined)" />
-        </div>
+        <!-- Display Name -->
         <div class="form-row">
           <label class="form-label">Display Name</label>
           <input :value="config.name ?? ''" type="text" class="form-input" @input="updateProvider(id, 'name', ($event.target as HTMLInputElement).value || undefined)" />
-        </div>
-
-        <!-- Env / Whitelist / Blacklist -->
-        <div class="form-row">
-          <label class="form-label">Env Vars</label>
-          <TagInput :model-value="config.env ?? []" @update:model-value="updateProvider(id, 'env', $event)" @dirty="configStore.dirtyPaths.add(`provider.${id}.env`)" />
-        </div>
-        <div class="form-row">
-          <label class="form-label">Model Whitelist</label>
-          <TagInput :model-value="config.whitelist ?? []" @update:model-value="updateProvider(id, 'whitelist', $event)" @dirty="configStore.dirtyPaths.add(`provider.${id}.whitelist`)" />
-        </div>
-        <div class="form-row">
-          <label class="form-label">Model Blacklist</label>
-          <TagInput :model-value="config.blacklist ?? []" @update:model-value="updateProvider(id, 'blacklist', $event)" @dirty="configStore.dirtyPaths.add(`provider.${id}.blacklist`)" />
         </div>
 
         <!-- Timeout -->
@@ -271,19 +253,27 @@ const newModelId = ref<Record<string, string>>({})
         <div class="models-section">
           <div class="models-header">
             <label class="form-label">Models</label>
-            <button class="btn-import" @click="importModelsFromServer(id)"><RefreshCw :size="10" /> Import</button>
+            <button class="btn-import" @click="importModelsFromServer(id)" :disabled="importLoading.has(id)">
+              <Loader2 v-if="importLoading.has(id)" :size="10" class="animate-spin" />
+              <RefreshCw v-else :size="10" />
+              Import from server
+            </button>
           </div>
 
+          <!-- Import feedback -->
+          <div v-if="importMessages[id]" class="import-success">{{ importMessages[id] }}</div>
+          <div v-if="importErrors[id]" class="import-error">{{ importErrors[id] }}</div>
+
           <div v-for="{ modelId, model } in providerModels(id)" :key="modelId" class="model-card">
-            <button class="model-header" @click="toggleModelExpand(`${id}/${modelId}`)">
-              <component :is="expandedModel === `${id}/${modelId}` ? ChevronDown : ChevronRight" :size="10" />
+            <button class="model-header" @click="toggleModelExpand(id + '/' + modelId)">
+              <component :is="expandedModel === id + '/' + modelId ? ChevronDown : ChevronRight" :size="10" />
               <span class="model-name">{{ model.name || modelId }}</span>
               <span class="model-id">{{ modelId }}</span>
               <span v-if="model.attachment" class="model-badge">multimodal</span>
               <span v-if="model.reasoning" class="model-badge reasoning">reasoning</span>
             </button>
 
-            <div v-if="expandedModel === `${id}/${modelId}`" class="model-body">
+            <div v-if="expandedModel === id + '/' + modelId" class="model-body">
               <div class="form-row">
                 <label class="form-label">Model ID</label>
                 <input :value="model.id ?? ''" type="text" class="form-input" @input="updateModelField(id, modelId, 'id', ($event.target as HTMLInputElement).value || undefined)" />
@@ -375,6 +365,8 @@ const newModelId = ref<Record<string, string>>({})
 .models-header { display: flex; align-items: center; justify-content: space-between; }
 .btn-import { display: inline-flex; align-items: center; gap: 4px; padding: 2px var(--space-6); background: transparent; border: 1px solid var(--border-variant); border-radius: var(--radius-xs); color: var(--text-accent); cursor: pointer; font-size: var(--font-size-small); }
 .btn-import:hover { background: var(--bg-hover); }
+.import-success { font-size: var(--font-size-small); color: var(--success); padding: 2px 0; }
+.import-error { font-size: var(--font-size-small); color: var(--error); padding: 2px 0; }
 .model-card { border: 1px solid var(--border-variant); border-radius: var(--radius-xs); overflow: hidden; }
 .model-header { display: flex; align-items: center; gap: var(--space-6); width: 100%; padding: var(--space-4) var(--space-6); background: var(--bg-app); border: none; color: var(--text-primary); cursor: pointer; font-family: var(--font-ui); font-size: var(--font-size-small); text-align: left; }
 .model-header:hover { background: var(--bg-hover); }
