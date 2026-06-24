@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { onMounted, ref, onBeforeUnmount } from "vue";
+import { onMounted, ref, onBeforeUnmount, watch } from "vue";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { invoke } from "@tauri-apps/api/core";
 import { Minus, Square, X, Settings } from "lucide-vue-next";
@@ -26,6 +26,16 @@ const { startWatching, stopWatching } = useStuckDetection();
 
 const appWindow = getCurrentWindow();
 const isMaximized = ref(false);
+
+// Gear button ref — focus restore on drawer close
+const gearBtn = ref<HTMLButtonElement | null>(null);
+
+// Watch drawer close → restore focus to gear button
+watch(() => configStore.panelOpen, (open, wasOpen) => {
+  if (!open && wasOpen) {
+    gearBtn.value?.focus();
+  }
+});
 
 async function toggleMaximize() {
   await appWindow.toggleMaximize();
@@ -115,6 +125,7 @@ onBeforeUnmount(() => {
       <div class="titlebar-buttons">
         <div class="titlebar-actions">
           <button
+            ref="gearBtn"
             class="titlebar-button gear-btn"
             title="设置 (Ctrl+,)"
             @click="configStore.panelOpen = true"

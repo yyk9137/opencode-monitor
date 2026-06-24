@@ -1,13 +1,9 @@
 <script setup lang="ts">
-import { ref } from 'vue'
 import { Settings, ChevronRight, RotateCcw, Loader2 } from 'lucide-vue-next'
 import { useConfigStore } from '@/stores/config'
 import InstanceSelector from './InstanceSelector.vue'
 
 const configStore = useConfigStore()
-
-// Gear button ref for focus restore on close
-const gearBtn = ref<HTMLButtonElement | null>(null)
 
 // Navigation sections
 const navSections = [
@@ -29,7 +25,7 @@ function handleClose() {
     configStore.requestDismiss({ kind: 'close' })
   } else {
     configStore.forceDismiss()
-    gearBtn.value?.focus()
+    // Focus restore handled by App.vue watch on panelOpen
   }
 }
 
