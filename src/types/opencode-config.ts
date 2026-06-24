@@ -99,7 +99,7 @@ export interface ProviderModelCost {
 }
 
 export interface ProviderModelLimit {
-  context?: number
+  context: number
   output: number
   input?: number
 }
