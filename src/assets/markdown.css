@@ -105,7 +105,7 @@
   font-family: 'JetBrains Mono', 'Fira Code', 'Cascadia Code', 'Consolas', monospace;
   font-size: 12px;
   background: var(--surface);
-  color: var(--text-accent);
+  color: var(--text-primary);
   padding: 1px 4px;
   border-radius: 3px;
   font-weight: 500;

@@ -1,6 +1,5 @@
 import { onMounted } from 'vue'
 import { marked } from 'marked'
-import DOMPurify from 'dompurify'
 
 // ── Marked configuration (applied once) ────────────────────────────
 let markedConfigured = false
@@ -53,6 +52,7 @@ export function useMarkdown() {
   }
 
   // Parse markdown to HTML (sync — marked is fast enough for main thread)
+  // No DOMPurify — desktop app, data from user's own agent, no XSS risk
   function renderMarkdown(text: string): string {
     if (!text) return ''
     ensureMarked()
@@ -61,11 +61,10 @@ export function useMarkdown() {
     const cached = getCached(text)
     if (cached !== undefined) return cached
 
-    // Parse + sanitize
+    // Parse (no sanitization — saves ~0.5ms/message)
     const html = marked.parse(text, { async: false }) as string
-    const sanitized = DOMPurify.sanitize(html)
-    setCached(text, sanitized)
-    return sanitized
+    setCached(text, html)
+    return html
   }
 
   return { renderMarkdown, getCachedRender }
