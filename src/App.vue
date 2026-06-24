@@ -2,8 +2,9 @@
 import { onMounted, ref, onBeforeUnmount } from "vue";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { invoke } from "@tauri-apps/api/core";
-import { Minus, Square, X } from "lucide-vue-next";
+import { Minus, Square, X, Settings } from "lucide-vue-next";
 import { useSessionStore } from "@/stores/session";
+import { useConfigStore } from "@/stores/config";
 import { useEventStream } from "@/composables/useEventStream";
 import { useSessionBootstrap } from "@/composables/useSessionBootstrap";
 import { useInstanceScanner } from "@/composables/useInstanceScanner";
@@ -12,8 +13,10 @@ import ConnectionConfig from "@/components/ConnectionConfig.vue";
 import SessionTree from "@/components/SessionTree.vue";
 import SubagentDetail from "@/components/SubagentDetail.vue";
 import ToastHost from "@/components/ToastHost.vue";
+import SettingsDrawer from "@/components/settings/SettingsDrawer.vue";
 
 const store = useSessionStore();
+const configStore = useConfigStore();
 const { connectAll, disconnectAll } = useEventStream();
 const { bootstrap } = useSessionBootstrap();
 const { scan } = useInstanceScanner();
@@ -110,6 +113,15 @@ onBeforeUnmount(() => {
         </span>
       </div>
       <div class="titlebar-buttons">
+        <div class="titlebar-actions">
+          <button
+            class="titlebar-button gear-btn"
+            title="设置 (Ctrl+,)"
+            @click="configStore.panelOpen = true"
+          >
+            <Settings :size="14" />
+          </button>
+        </div>
         <div class="titlebar-button" @click="appWindow.minimize()">
           <Minus :size="14" />
         </div>
@@ -131,7 +143,7 @@ onBeforeUnmount(() => {
       </aside>
 
       <!-- Detail pane -->
-      <main class="main-pane">
+      <main class="main-pane" :inert="configStore.panelOpen">
         <SubagentDetail />
       </main>
     </div>
@@ -146,6 +158,7 @@ onBeforeUnmount(() => {
       <button type="button" @click="scanNotice = ''">dismiss</button>
     </div>
     <ToastHost />
+    <SettingsDrawer />
   </div>
 </template>
 
@@ -198,6 +211,13 @@ onBeforeUnmount(() => {
   overflow: hidden;
   text-overflow: ellipsis;
   max-width: 280px;
+}
+
+.titlebar-actions {
+  display: flex;
+  align-items: center;
+  -webkit-app-region: no-drag;  /* Override .titlebar drag — gear button must be clickable */
+  margin-right: var(--space-4);
 }
 
 .bootstrap-error {
