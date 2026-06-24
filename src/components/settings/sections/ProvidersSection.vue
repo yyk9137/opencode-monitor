@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, ref, onMounted } from 'vue'
+import { computed, ref } from 'vue'
 import { fetch } from '@tauri-apps/plugin-http'
 import { ChevronDown, ChevronRight, Plus, Trash2, RefreshCw, Loader2 } from 'lucide-vue-next'
 import { useConfigStore } from '@/stores/config'
@@ -8,20 +8,33 @@ import TagInput from '../TagInput.vue'
 const configStore = useConfigStore()
 const expanded = ref<string | null>(null)
 const showAddForm = ref(false)
-const newId = ref('')
 
-// apiKey is write-only: we track locally entered values, don't repopulate from saved config
-const apiKeyInputs = ref<Record<string, string>>({})
+// ── Known providers list (from OpenCode schema / OpenChamber pattern) ─────
+const KNOWN_PROVIDERS = [
+  { id: 'anthropic', name: 'Anthropic', api: 'anthropic' },
+  { id: 'openai', name: 'OpenAI', api: 'openai-compatible' },
+  { id: 'google', name: 'Google (Gemini)', api: 'google' },
+  { id: 'azure', name: 'Azure OpenAI', api: 'openai-compatible' },
+  { id: 'openrouter', name: 'OpenRouter', api: 'openai-compatible' },
+  { id: 'groq', name: 'Groq', api: 'openai-compatible' },
+  { id: 'together', name: 'Together AI', api: 'openai-compatible' },
+  { id: 'fireworks', name: 'Fireworks AI', api: 'openai-compatible' },
+  { id: 'deepseek', name: 'DeepSeek', api: 'openai-compatible' },
+  { id: 'mistral', name: 'Mistral', api: 'openai-compatible' },
+  { id: 'cohere', name: 'Cohere', api: 'openai-compatible' },
+  { id: 'xai', name: 'xAI (Grok)', api: 'openai-compatible' },
+  { id: 'github-copilot', name: 'GitHub Copilot', api: 'openai-compatible' },
+  { id: 'custom', name: 'Custom (OpenAI Compatible)', api: 'openai-compatible' },
+]
 
-// Model expansion per provider
-const expandedModel = ref<string | null>(null) // key: `${providerId}/${modelId}`
+const selectedKnownProvider = ref('')
+const customId = ref('')
+const loadingModels = ref(false)
 
-// ── Fetch models from /provider ────────────────────────────────────────────
+// ── Model import from /provider ───────────────────────────────────────────
 interface RemoteModel { id: string; name?: string }
 interface RemoteProvider { id: string; name?: string; models?: RemoteModel[] }
-
 const remoteProviders = ref<RemoteProvider[]>([])
-const loadingModels = ref(false)
 const modelFetchError = ref('')
 
 async function fetchRemoteModels() {
@@ -40,8 +53,6 @@ async function fetchRemoteModels() {
   }
 }
 
-onMounted(fetchRemoteModels)
-
 // ── Config providers ────────────────────────────────────────────────────────
 const providers = computed(() => {
   return Object.entries(configStore.draft?.provider ?? {}).map(([id, config]) => ({ id, config }))
@@ -49,9 +60,6 @@ const providers = computed(() => {
 
 function toggleExpand(id: string) {
   expanded.value = expanded.value === id ? null : id
-  if (expanded.value === id && !apiKeyInputs.value[id]) {
-    apiKeyInputs.value[id] = '' // init empty for write-only field
-  }
 }
 
 function updateProvider(id: string, field: string, value: unknown) {
@@ -70,25 +78,43 @@ function updateOptions(id: string, key: string, value: unknown) {
   updateProvider(id, 'options', opts)
 }
 
-// apiKey: only write, never read back
+// apiKey: write-only, never repopulate
+const apiKeyInputs = ref<Record<string, string>>({})
 function onApiKeyInput(id: string, value: string) {
   apiKeyInputs.value[id] = value
-  if (value) {
-    updateOptions(id, 'apiKey', value)
-  } else {
-    // empty = don't change (keep existing), remove from draft
-    updateOptions(id, 'apiKey', undefined)
-  }
+  updateOptions(id, 'apiKey', value || undefined)
 }
 
-function addProvider() {
-  const id = newId.value.trim()
-  if (!id || !configStore.draft) return
+// ── Add provider flow ────────────────────────────────────────────────────
+function startAddProvider() {
+  showAddForm.value = true
+  selectedKnownProvider.value = ''
+  customId.value = ''
+}
+
+function confirmAddProvider() {
+  let id = ''
+  let name = ''
+
+  if (selectedKnownProvider.value === 'custom') {
+    id = customId.value.trim()
+    if (!id) return
+    name = id
+  } else if (selectedKnownProvider.value) {
+    const known = KNOWN_PROVIDERS.find(p => p.id === selectedKnownProvider.value)
+    if (!known) return
+    id = known.id
+    name = known.name
+  } else {
+    return
+  }
+
+  if (!configStore.draft) return
   if (!configStore.draft.provider) configStore.draft.provider = {}
-  if (configStore.draft.provider[id]) return
-  configStore.draft.provider[id] = { options: {} }
+  if (configStore.draft.provider[id]) { expanded.value = id; showAddForm.value = false; return }
+
+  configStore.draft.provider[id] = { name, options: {} }
   configStore.dirtyPaths.add(`provider.${id}`)
-  newId.value = ''
   showAddForm.value = false
   expanded.value = id
 }
@@ -99,7 +125,9 @@ function softDeleteProvider(id: string) {
   configStore.dirtyPaths.add(`provider.${id}`)
 }
 
-// ── Model management ───────────────────────────────────────────────────────
+// ── Model management (inside provider edit form) ─────────────────────────
+const expandedModel = ref<string | null>(null)
+
 const providerModels = computed(() => {
   return (id: string) => Object.entries(configStore.draft?.provider?.[id]?.models ?? {}).map(([modelId, model]) => ({ modelId, model }))
 })
@@ -135,13 +163,11 @@ function addModel(providerId: string, modelId: string) {
 
 function removeModel(providerId: string, modelId: string) {
   if (!configStore.draft?.provider?.[providerId]?.models) return
-  // Can't delete via deep-merge, set to empty
   configStore.draft.provider[providerId].models![modelId] = {}
   configStore.dirtyPaths.add(`provider.${providerId}.models.${modelId}`)
 }
 
-// Import models from /provider for a specific provider
-function importModels(providerId: string) {
+function importModelsFromServer(providerId: string) {
   const remote = remoteProviders.value.find(p => p.id === providerId)
   if (!remote?.models) return
   if (!configStore.draft?.provider?.[providerId]) return
@@ -167,16 +193,17 @@ const newModelId = ref<Record<string, string>>({})
   <div class="section-content">
     <h2 class="section-title">Providers</h2>
 
-    <!-- Refresh remote models button -->
+    <!-- Toolbar: fetch models from server -->
     <div class="toolbar">
       <button class="btn-refresh" @click="fetchRemoteModels" :disabled="loadingModels">
         <Loader2 v-if="loadingModels" :size="11" class="animate-spin" />
         <RefreshCw v-else :size="11" />
-        Fetch models from server
+        Fetch models
       </button>
       <span v-if="modelFetchError" class="error-text">{{ modelFetchError }}</span>
     </div>
 
+    <!-- Existing providers -->
     <div v-for="{ id, config } in providers" :key="id" class="provider-card">
       <button class="provider-header" @click="toggleExpand(id)">
         <component :is="expanded === id ? ChevronDown : ChevronRight" :size="12" />
@@ -185,125 +212,66 @@ const newModelId = ref<Record<string, string>>({})
       </button>
 
       <div v-if="expanded === id" class="provider-body">
-        <!-- API Key — write-only, never repopulated -->
+        <!-- API Key — write-only -->
         <div class="form-row">
           <label class="form-label">API Key</label>
           <input
             type="password"
             :value="apiKeyInputs[id] ?? ''"
             class="form-input"
-            placeholder="Enter key to update (saved value hidden for security)"
+            placeholder="Enter key to update (saved value hidden)"
             @input="onApiKeyInput(id, ($event.target as HTMLInputElement).value)"
           />
-          <span class="field-hint">Key is passed via environment variable. Saved value is not shown.</span>
         </div>
 
         <!-- Base URL -->
         <div class="form-row">
           <label class="form-label">Base URL</label>
-          <input
-            :value="config.options?.baseURL ?? ''"
-            type="text"
-            class="form-input"
-            placeholder="https://api.example.com"
-            @input="updateOptions(id, 'baseURL', ($event.target as HTMLInputElement).value || undefined)"
-          />
+          <input :value="config.options?.baseURL ?? ''" type="text" class="form-input" placeholder="https://api.example.com" @input="updateOptions(id, 'baseURL', ($event.target as HTMLInputElement).value || undefined)" />
         </div>
 
-        <!-- API package -->
+        <!-- API / NPM / Name -->
         <div class="form-row">
           <label class="form-label">API Package</label>
-          <input
-            :value="config.api ?? ''"
-            type="text"
-            class="form-input"
-            placeholder="@anthropic-ai/sdk"
-            @input="updateProvider(id, 'api', ($event.target as HTMLInputElement).value || undefined)"
-          />
+          <input :value="config.api ?? ''" type="text" class="form-input" placeholder="@anthropic-ai/sdk" @input="updateProvider(id, 'api', ($event.target as HTMLInputElement).value || undefined)" />
         </div>
-
-        <!-- NPM package -->
         <div class="form-row">
           <label class="form-label">NPM Package</label>
-          <input
-            :value="config.npm ?? ''"
-            type="text"
-            class="form-input"
-            placeholder="@anthropic-ai/sdk"
-            @input="updateProvider(id, 'npm', ($event.target as HTMLInputElement).value || undefined)"
-          />
+          <input :value="config.npm ?? ''" type="text" class="form-input" @input="updateProvider(id, 'npm', ($event.target as HTMLInputElement).value || undefined)" />
         </div>
-
-        <!-- Display Name -->
         <div class="form-row">
           <label class="form-label">Display Name</label>
-          <input
-            :value="config.name ?? ''"
-            type="text"
-            class="form-input"
-            @input="updateProvider(id, 'name', ($event.target as HTMLInputElement).value || undefined)"
-          />
+          <input :value="config.name ?? ''" type="text" class="form-input" @input="updateProvider(id, 'name', ($event.target as HTMLInputElement).value || undefined)" />
         </div>
 
-        <!-- Env vars -->
+        <!-- Env / Whitelist / Blacklist -->
         <div class="form-row">
           <label class="form-label">Env Vars</label>
-          <TagInput
-            :model-value="config.env ?? []"
-            @update:model-value="updateProvider(id, 'env', $event)"
-            @dirty="configStore.dirtyPaths.add(`provider.${id}.env`)"
-          />
+          <TagInput :model-value="config.env ?? []" @update:model-value="updateProvider(id, 'env', $event)" @dirty="configStore.dirtyPaths.add(`provider.${id}.env`)" />
         </div>
-
-        <!-- Whitelist / Blacklist -->
         <div class="form-row">
           <label class="form-label">Model Whitelist</label>
-          <TagInput
-            :model-value="config.whitelist ?? []"
-            @update:model-value="updateProvider(id, 'whitelist', $event)"
-            @dirty="configStore.dirtyPaths.add(`provider.${id}.whitelist`)"
-          />
+          <TagInput :model-value="config.whitelist ?? []" @update:model-value="updateProvider(id, 'whitelist', $event)" @dirty="configStore.dirtyPaths.add(`provider.${id}.whitelist`)" />
         </div>
         <div class="form-row">
           <label class="form-label">Model Blacklist</label>
-          <TagInput
-            :model-value="config.blacklist ?? []"
-            @update:model-value="updateProvider(id, 'blacklist', $event)"
-            @dirty="configStore.dirtyPaths.add(`provider.${id}.blacklist`)"
-          />
+          <TagInput :model-value="config.blacklist ?? []" @update:model-value="updateProvider(id, 'blacklist', $event)" @dirty="configStore.dirtyPaths.add(`provider.${id}.blacklist`)" />
         </div>
 
         <!-- Timeout -->
         <div class="form-row">
           <label class="form-label">Timeout (ms)</label>
           <div class="number-false-row">
-            <input
-              :value="typeof config.options?.timeout === 'number' ? config.options.timeout : ''"
-              type="number"
-              min="1"
-              class="form-input"
-              :disabled="config.options?.timeout === false"
-              placeholder="5000"
-              @input="updateOptions(id, 'timeout', Number(($event.target as HTMLInputElement).value) || undefined)"
-            />
-            <label class="checkbox-label">
-              <input
-                type="checkbox"
-                :checked="config.options?.timeout === false"
-                @change="updateOptions(id, 'timeout', ($event.target as HTMLInputElement).checked ? false : undefined)"
-              />
-              <span>Disable</span>
-            </label>
+            <input :value="typeof config.options?.timeout === 'number' ? config.options.timeout : ''" type="number" min="1" class="form-input" :disabled="config.options?.timeout === false" @input="updateOptions(id, 'timeout', Number(($event.target as HTMLInputElement).value) || undefined)" />
+            <label class="checkbox-label"><input type="checkbox" :checked="config.options?.timeout === false" @change="updateOptions(id, 'timeout', ($event.target as HTMLInputElement).checked ? false : undefined)" /><span>Disable</span></label>
           </div>
         </div>
 
-        <!-- Models section -->
+        <!-- Models section (inside provider edit) -->
         <div class="models-section">
           <div class="models-header">
             <label class="form-label">Models</label>
-            <button class="btn-import" @click="importModels(id)" title="Import models from server">
-              <RefreshCw :size="10" /> Import from server
-            </button>
+            <button class="btn-import" @click="importModelsFromServer(id)"><RefreshCw :size="10" /> Import</button>
           </div>
 
           <div v-for="{ modelId, model } in providerModels(id)" :key="modelId" class="model-card">
@@ -317,26 +285,17 @@ const newModelId = ref<Record<string, string>>({})
 
             <div v-if="expandedModel === `${id}/${modelId}`" class="model-body">
               <div class="form-row">
-                <label class="form-label">Name</label>
-                <input :value="model.name ?? ''" type="text" class="form-input" @input="updateModelField(id, modelId, 'name', ($event.target as HTMLInputElement).value || undefined)" />
-              </div>
-              <div class="form-row">
-                <label class="form-label">ID</label>
+                <label class="form-label">Model ID</label>
                 <input :value="model.id ?? ''" type="text" class="form-input" @input="updateModelField(id, modelId, 'id', ($event.target as HTMLInputElement).value || undefined)" />
               </div>
+              <div class="form-row">
+                <label class="form-label">Display Name</label>
+                <input :value="model.name ?? ''" type="text" class="form-input" @input="updateModelField(id, modelId, 'name', ($event.target as HTMLInputElement).value || undefined)" />
+              </div>
               <div class="form-row-inline">
-                <label class="checkbox-label">
-                  <input type="checkbox" :checked="model.attachment ?? false" @change="updateModelField(id, modelId, 'attachment', ($event.target as HTMLInputElement).checked)" />
-                  <span>Multimodal (image/video/audio)</span>
-                </label>
-                <label class="checkbox-label">
-                  <input type="checkbox" :checked="model.reasoning ?? false" @change="updateModelField(id, modelId, 'reasoning', ($event.target as HTMLInputElement).checked)" />
-                  <span>Reasoning model</span>
-                </label>
-                <label class="checkbox-label">
-                  <input type="checkbox" :checked="model.tool_call ?? false" @change="updateModelField(id, modelId, 'tool_call', ($event.target as HTMLInputElement).checked)" />
-                  <span>Tool calling</span>
-                </label>
+                <label class="checkbox-label"><input type="checkbox" :checked="model.attachment ?? false" @change="updateModelField(id, modelId, 'attachment', ($event.target as HTMLInputElement).checked)" /><span>Multimodal</span></label>
+                <label class="checkbox-label"><input type="checkbox" :checked="model.reasoning ?? false" @change="updateModelField(id, modelId, 'reasoning', ($event.target as HTMLInputElement).checked)" /><span>Reasoning</span></label>
+                <label class="checkbox-label"><input type="checkbox" :checked="model.tool_call ?? false" @change="updateModelField(id, modelId, 'tool_call', ($event.target as HTMLInputElement).checked)" /><span>Tool calling</span></label>
               </div>
               <div class="form-row">
                 <label class="form-label">Max Context (tokens)</label>
@@ -350,52 +309,43 @@ const newModelId = ref<Record<string, string>>({})
                 <label class="form-label">Family</label>
                 <input :value="model.family ?? ''" type="text" class="form-input" placeholder="e.g. claude" @input="updateModelField(id, modelId, 'family', ($event.target as HTMLInputElement).value || undefined)" />
               </div>
-              <div class="form-row">
-                <label class="form-label">Status</label>
-                <select :value="model.status ?? ''" class="form-input" @change="updateModelField(id, modelId, 'status', ($event.target as HTMLSelectElement).value || undefined)">
-                  <option value="">(not set)</option>
-                  <option value="active">active</option>
-                  <option value="beta">beta</option>
-                  <option value="alpha">alpha</option>
-                  <option value="deprecated">deprecated</option>
-                </select>
-              </div>
               <div class="model-actions">
-                <button class="btn-delete" @click="removeModel(id, modelId)">
-                  <Trash2 :size="10" /> Remove model
-                </button>
+                <button class="btn-delete" @click="removeModel(id, modelId)"><Trash2 :size="10" /> Remove</button>
               </div>
             </div>
           </div>
 
-          <!-- Add model -->
           <div v-if="showAddModel[id]" class="add-model-form">
             <input v-model="newModelId[id]" class="form-input" placeholder="model id (e.g. claude-sonnet-4-5)" @keydown.enter="addModel(id, newModelId[id] || ''); newModelId[id] = ''; showAddModel[id] = false" />
             <button class="btn-add-sm" @click="addModel(id, newModelId[id] || ''); newModelId[id] = ''; showAddModel[id] = false">Add</button>
             <button class="btn-cancel-sm" @click="showAddModel[id] = false">Cancel</button>
           </div>
-          <button v-else class="btn-add-model" @click="showAddModel[id] = true; newModelId[id] = ''">
-            <Plus :size="10" /> Add Model
-          </button>
+          <button v-else class="btn-add-model" @click="showAddModel[id] = true; newModelId[id] = ''"><Plus :size="10" /> Add Model</button>
         </div>
 
         <!-- Actions -->
         <div class="card-actions">
-          <button class="btn-delete" @click="softDeleteProvider(id)">
-            <Trash2 :size="11" /> Clear config
-          </button>
+          <button class="btn-delete" @click="softDeleteProvider(id)"><Trash2 :size="11" /> Clear config</button>
         </div>
       </div>
     </div>
 
+    <!-- Add provider form (dropdown of known providers + custom) -->
     <div v-if="showAddForm" class="add-form">
-      <input v-model="newId" class="form-input" placeholder="provider id (e.g. anthropic)" @keydown.enter="addProvider" />
-      <button class="btn-add" @click="addProvider">Add</button>
-      <button class="btn-cancel" @click="showAddForm = false">Cancel</button>
+      <div class="add-form-inner">
+        <label class="form-label">Select Provider</label>
+        <select v-model="selectedKnownProvider" class="form-input">
+          <option value="">— Choose a provider —</option>
+          <option v-for="kp in KNOWN_PROVIDERS" :key="kp.id" :value="kp.id">{{ kp.name }}</option>
+        </select>
+        <input v-if="selectedKnownProvider === 'custom'" v-model="customId" class="form-input" placeholder="Provider ID (e.g. my-custom-api)" />
+        <div class="add-form-actions">
+          <button class="btn-add" @click="confirmAddProvider" :disabled="!selectedKnownProvider || (selectedKnownProvider === 'custom' && !customId.trim())">Add</button>
+          <button class="btn-cancel" @click="showAddForm = false">Cancel</button>
+        </div>
+      </div>
     </div>
-    <button v-else class="btn-add-card" @click="showAddForm = true">
-      <Plus :size="12" /> Add Provider
-    </button>
+    <button v-else class="btn-add-card" @click="startAddProvider"><Plus :size="12" /> Add Provider</button>
   </div>
 </template>
 
@@ -418,7 +368,6 @@ const newModelId = ref<Record<string, string>>({})
 .form-input { width: 100%; padding: 4px var(--space-8); height: 28px; background: var(--bg-element); border: 1px solid var(--border-variant); border-radius: var(--radius-xs); color: var(--text-primary); font-family: var(--font-ui); font-size: var(--font-size-ui); outline: none; }
 .form-input:focus { background: var(--bg-editor); box-shadow: 0 0 0 1px var(--border-focused); }
 .form-input:disabled { opacity: 0.4; }
-.field-hint { font-size: var(--font-size-small); color: var(--text-placeholder); }
 .number-false-row { display: flex; align-items: center; gap: var(--space-8); }
 .number-false-row .form-input { flex: 1; }
 .checkbox-label { display: flex; align-items: center; gap: 4px; font-size: var(--font-size-small); color: var(--text-muted); cursor: pointer; white-space: nowrap; }
@@ -444,9 +393,12 @@ const newModelId = ref<Record<string, string>>({})
 .card-actions { display: flex; justify-content: flex-end; }
 .btn-delete { display: inline-flex; align-items: center; gap: 4px; padding: 4px var(--space-8); background: transparent; border: 1px solid var(--error); border-radius: var(--radius-xs); color: var(--error); cursor: pointer; font-size: var(--font-size-small); }
 .btn-delete:hover { background: rgba(217,87,87,0.1); }
-.add-form { display: flex; gap: var(--space-6); align-items: center; }
+.add-form { border: 1px solid var(--border-variant); border-radius: var(--radius-xs); padding: var(--space-8); background: var(--bg-editor); }
+.add-form-inner { display: flex; flex-direction: column; gap: var(--space-8); }
+.add-form-actions { display: flex; gap: var(--space-6); }
 .btn-add, .btn-cancel { padding: 4px var(--space-8); border-radius: var(--radius-xs); cursor: pointer; font-size: var(--font-size-ui); border: none; }
 .btn-add { background: var(--text-accent); color: var(--bg-editor); }
+.btn-add:disabled { opacity: 0.4; cursor: not-allowed; }
 .btn-cancel { background: transparent; color: var(--text-muted); }
 .btn-add-card { display: inline-flex; align-items: center; gap: 4px; padding: var(--space-6) var(--space-8); background: transparent; border: 1px dashed var(--border-variant); border-radius: var(--radius-xs); color: var(--text-muted); cursor: pointer; font-size: var(--font-size-ui); }
 .btn-add-card:hover { color: var(--text-primary); border-color: var(--text-accent); }
