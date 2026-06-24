@@ -82,6 +82,35 @@ function extractFilePath(_tool: string, input: unknown): string | null {
     ?? (Array.isArray(obj.paths) && obj.paths.length ? String(obj.paths[0]) : null)
 }
 
+// ── Generate unified diff from edit tool input ───────────────────
+// For edit tools, state.input contains oldString and newString.
+// We generate a simple unified diff to show in the tool body.
+function generateDiffFromInput(_tool: string, input: unknown): string | null {
+  if (typeof input !== 'object' || !input) return null
+  const obj = input as Record<string, unknown>
+  const str = (k: string) => (k in obj && typeof obj[k] === 'string' ? obj[k] as string : null)
+
+  const oldStr = str('oldString')
+  const newStr = str('newString')
+  if (oldStr === null || newStr === null) return null
+
+  // Simple unified diff generation
+  const oldLines = oldStr.split('\n')
+  const newLines = newStr.split('\n')
+  const maxLen = Math.max(oldLines.length, newLines.length)
+
+  let result = `@@ -1,${oldLines.length} +1,${newLines.length} @@\n`
+  for (let i = 0; i < maxLen; i++) {
+    if (i < oldLines.length && i < newLines.length && oldLines[i] === newLines[i]) {
+      result += ` ${oldLines[i]}\n`
+    } else {
+      if (i < oldLines.length) result += `-${oldLines[i]}\n`
+      if (i < newLines.length) result += `+${newLines[i]}\n`
+    }
+  }
+  return result
+}
+
 import { useSessionMessages } from '@/composables/useSessionMessages'
 import { fetch as httpFetch } from '@tauri-apps/plugin-http'
 import type {
@@ -1018,9 +1047,13 @@ function toolOutputText(state: ToolPart['state'] | undefined): string {
                   </button>
                 </div>
                 <div
-                  v-if="expandedToolBodies.has(part.id) && ((part as ToolPart).state?.output || (part as ToolPart).state?.error)"
+                  v-if="expandedToolBodies.has(part.id) && ((part as ToolPart).state?.output || (part as ToolPart).state?.error || generateDiffFromInput((part as ToolPart).tool, (part as ToolPart).state?.input))"
                   class="tool-body"
                 >
+                  <DiffViewer
+                    v-if="generateDiffFromInput((part as ToolPart).tool, (part as ToolPart).state?.input)"
+                    :content="generateDiffFromInput((part as ToolPart).tool, (part as ToolPart).state?.input)!"
+                  />
                   <MarkdownContent :text="toolOutputText((part as ToolPart).state)" />
                 </div>
               </div>
