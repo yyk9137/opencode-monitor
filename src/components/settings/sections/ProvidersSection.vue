@@ -107,8 +107,12 @@ function confirmAddProvider() {
 
 function softDeleteProvider(id: string) {
   if (!configStore.draft?.provider) return
-  configStore.draft.provider[id] = {}
-  configStore.dirtyPaths.add(`provider.${id}`)
+  // Delete from draft (UI removes the card immediately)
+  delete configStore.draft.provider[id]
+  configStore.dirtyPaths.add('provider.' + id)
+  if (expanded.value === id) expanded.value = null
+  // Note: server-side mergeDeep may restore the key from existing config.
+  // True deletion may require manual edit of config.json.
 }
 
 // ── Model management (inside provider edit form) ─────────────────────────
@@ -327,7 +331,7 @@ const newModelId = ref<Record<string, string>>({})
 
         <!-- Actions -->
         <div class="card-actions">
-          <button class="btn-delete" @click="softDeleteProvider(id)"><Trash2 :size="11" /> Clear config</button>
+          <button class="btn-delete" @click="softDeleteProvider(id)"><Trash2 :size="11" /> Delete</button>
         </div>
       </div>
     </div>
