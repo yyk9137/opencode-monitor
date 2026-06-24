@@ -58,11 +58,17 @@ function updateOptions(id: string, key: string, value: unknown) {
   updateProvider(id, 'options', opts)
 }
 
-// apiKey: write-only, never repopulate
+// apiKey: write-only, never repopulate from saved config
+// Key behavior: empty input = keep existing (don't delete), non-empty = update
 const apiKeyInputs = ref<Record<string, string>>({})
 function onApiKeyInput(id: string, value: string) {
   apiKeyInputs.value[id] = value
-  updateOptions(id, 'apiKey', value || undefined)
+  if (value) {
+    // User entered a new key → write it to draft
+    updateOptions(id, 'apiKey', value)
+  }
+  // If empty → don't touch draft's apiKey (preserve existing value from original)
+  // This prevents accidental deletion of saved keys when editing other fields
 }
 
 // ── Add provider flow ────────────────────────────────────────────────────
@@ -206,7 +212,7 @@ async function importModelsFromServer(providerId: string) {
       }
     }
     configStore.dirtyPaths.add('provider.' + providerId + '.models')
-    importMessages.value[providerId] = 'Imported ' + added + ' model' + (added !== 1 ? 's' : '') + ' from upstream.'
+    importMessages.value[providerId] = 'Fetched ' + added + ' model' + (added !== 1 ? 's' : '') + ' from upstream.'
   } catch (e) {
     importErrors.value[providerId] = String(e)
   } finally {
@@ -262,7 +268,7 @@ const newModelId = ref<Record<string, string>>({})
             <button class="btn-import" @click="importModelsFromServer(id)" :disabled="importLoading.has(id)">
               <Loader2 v-if="importLoading.has(id)" :size="10" class="animate-spin" />
               <RefreshCw v-else :size="10" />
-              Import from server
+              Fetch models
             </button>
           </div>
 
