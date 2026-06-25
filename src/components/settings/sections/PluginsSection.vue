@@ -81,21 +81,30 @@ async function tryReadConfigFile(home: string, entry: PluginConfigEntry): Promis
 }
 
 async function loadPluginConfigs() {
+  console.log('[PluginsSection] loadPluginConfigs called, draft:', !!configStore.draft, 'plugins:', configStore.draft?.plugin?.length ?? 0)
   configLoading.value = true
   try {
     const home = await homeDir()
+    console.log('[PluginsSection] home:', home)
     const results: PluginConfigFile[] = []
 
     // Load tui.json first
-    const tuiFile = await tryReadConfigFile(home, TUI_CONFIG)
-    if (tuiFile) {
-      tuiFile.pluginName = '(TUI config)'
-      results.push(tuiFile)
+    const tuiPath = await join(home, '.config', 'opencode', 'tui.json')
+    console.log('[PluginsSection] tui.json path:', tuiPath)
+    const tuiExists = await exists(tuiPath)
+    console.log('[PluginsSection] tui.json exists:', tuiExists)
+    if (tuiExists) {
+      const tuiRaw = await readTextFile(tuiPath)
+      const tuiContent = JSON.parse(stripJsonComments(tuiRaw))
+      results.push({ pluginName: '(TUI config)', fileName: 'tui.json', path: tuiPath, content: tuiContent, raw: tuiRaw, exists: true })
+    } else {
+      results.push({ pluginName: '(TUI config)', fileName: 'tui.json', path: tuiPath, content: null, raw: '', exists: false })
     }
 
     // Load per-plugin config files
     for (const plugin of plugins.value) {
       const name = typeof plugin === 'string' ? plugin : plugin[0]
+      console.log('[PluginsSection] checking plugin:', name)
       // Find matching config entries
       let configEntries: PluginConfigEntry[] | undefined
       for (const [key, val] of Object.entries(PLUGIN_CONFIG_MAP)) {
@@ -104,25 +113,33 @@ async function loadPluginConfigs() {
           break
         }
       }
+      console.log('[PluginsSection] config entries for', name, ':', configEntries)
       if (!configEntries) continue
 
       for (const entry of configEntries) {
+        console.log('[PluginsSection] trying', entry.dir + '/' + entry.file)
         const file = await tryReadConfigFile(home, entry)
         if (file) {
           file.pluginName = name
           results.push(file)
+          console.log('[PluginsSection] loaded', file.fileName, 'exists:', file.exists)
         }
       }
     }
 
     pluginConfigFiles.value = results
-  } catch { /* silent */ } finally {
+    console.log('[PluginsSection] loaded', results.length, 'config files:', results.map(r => r.pluginName + ':' + r.fileName + '(' + (r.exists ? 'exists' : 'missing') + ')'))
+  } catch (e) { console.error('[PluginsSection] loadPluginConfigs error:', e) } finally {
     configLoading.value = false
   }
 }
 
 onMounted(loadPluginConfigs)
 watch(() => configStore.draft?.plugin, () => loadPluginConfigs(), { deep: true })
+// Also re-load when draft itself changes (fetchConfig completed)
+watch(() => configStore.draft, () => {
+  if (configStore.draft) loadPluginConfigs()
+})
 
 function updateConfigContent(_key: string, _value: unknown) {
   // TODO: save plugin config files to disk (separate from opencode.jsonc)
@@ -254,7 +271,7 @@ function toggleExpand(index: number) {
         </div>
 
         <!-- Plugin config files (from disk) -->
-        <div v-for="cf in pluginConfigFiles.filter(f => f.pluginName === (isTuple(plugin) ? plugin[0] : plugin))" :key="cf.path" class="config-file-section">
+        <div v-for="cf in pluginConfigFiles.filter(f => f.pluginName !== '(TUI config)' && f.pluginName === (isTuple(plugin) ? plugin[0] : plugin))" :key="cf.path" class="config-file-section">
           <div class="config-toolbar">
             <label class="form-label">{{ cf.fileName }}</label>
             <span class="file-path-hint" :class="{ 'file-found': cf.exists, 'file-missing': !cf.exists }">{{ cf.exists ? '✓ loaded' : '✗ not found' }}</span>
@@ -265,6 +282,10 @@ function toggleExpand(index: number) {
             @update:model-value="updateConfigContent(cf.pluginName + ':' + cf.path, $event)"
             @dirty="configStore.dirtyPaths.add('plugin')"
           />
+        </div>
+        <!-- Fallback: show all config files if name matching failed -->
+        <div v-if="pluginConfigFiles.length > 0 && pluginConfigFiles.filter(f => f.pluginName !== '(TUI config)' && f.pluginName === (isTuple(plugin) ? plugin[0] : plugin)).length === 0" class="config-file-section">
+          <span class="file-path-hint file-missing">No config file found for this plugin</span>
         </div>
 
         <div class="card-actions">
