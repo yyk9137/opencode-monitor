@@ -6,6 +6,7 @@ import { invoke } from '@tauri-apps/api/core'
 import { homeDir, join } from '@tauri-apps/api/path'
 import { parse as parseJsonc, modify as modifyJsonc, applyEdits as applyJsoncEdits } from 'jsonc-parser'
 import type { OpenCodeConfig } from '@/types/opencode-config'
+import { useSessionStore } from '@/stores/session'
 
 // ── Dismiss reason union (shared with ConfirmDialog) ──────────────────────
 export type DismissReason =
@@ -221,16 +222,24 @@ export const useConfigStore = defineStore('config', () => {
         const fileConfig = (parseJsonc(rawText) ?? {}) as OpenCodeConfig
 
         // 2. Try GET /config API for plugin-registered agents/MCP
-        // Auto-detect OpenCode instance if targetUrl is not set
+        //    Use session store's discovered instance URL if available (already verified)
+        //    Fallback to discover_opencode_ports if session store is empty
         if (!targetUrl.value) {
-          try {
-            const ports = await invoke<number[]>('discover_opencode_ports')
-            if (ports.length > 0) {
-              targetUrl.value = 'http://127.0.0.1:' + ports[0]
+          // Try session store first — instances already discovered by scanner
+          const sessionStore = useSessionStore()
+          if (sessionStore.instances.length > 0 && sessionStore.instances[0].url) {
+            targetUrl.value = sessionStore.instances[0].url
+          } else {
+            // Fallback: discover ports via Rust command
+            try {
+              const ports = await invoke<number[]>('discover_opencode_ports')
+              if (ports.length > 0) {
+                targetUrl.value = 'http://127.0.0.1:' + ports[0]
+              }
+            } catch {
+              // Discovery failed — try default port
+              targetUrl.value = 'http://127.0.0.1:4096'
             }
-          } catch {
-            // Discovery failed — fall back to default port
-            targetUrl.value = 'http://127.0.0.1:4096'
           }
         }
         let apiConfig: OpenCodeConfig | null = null
