@@ -181,6 +181,16 @@ function commitPerm(name: string) {
             <div class="form-row"><label class="form-label">Top P</label><input :value="config.top_p ?? ''" type="number" step="0.01" min="0" max="1" class="form-input" @input="updateAgent(name, 'top_p', Number(($event.target as HTMLInputElement).value) || undefined)" /></div>
             <div class="form-row"><label class="form-label">Steps</label><input :value="config.steps ?? ''" type="number" min="1" class="form-input" @input="updateAgent(name, 'steps', Number(($event.target as HTMLInputElement).value) || undefined)" /></div>
           </div>
+          <div class="form-row"><label class="form-label">Thinking Variant</label>
+            <select :value="config.variant ?? ''" class="form-input" @change="updateAgent(name, 'variant', ($event.target as HTMLSelectElement).value || undefined)">
+              <option value="">Inherit</option>
+              <option value="low">Low</option>
+              <option value="medium">Medium</option>
+              <option value="high">High</option>
+              <option value="max">Max</option>
+              <option value="thinking">Thinking</option>
+            </select>
+          </div>
           <div class="form-row"><label class="form-label">Color</label><input :value="config.color ?? ''" type="text" class="form-input" placeholder="#RRGGBB or theme name" @input="updateAgent(name, 'color', ($event.target as HTMLInputElement).value || undefined)" /></div>
           <div class="form-row"><label class="form-label">Disabled</label><button class="toggle-switch" :class="{ on: config.disable }" @click="updateAgent(name, 'disable', !config.disable)"><span class="toggle-knob" /></button></div>
           <div class="form-row"><label class="form-label">Hidden (subagent only)</label><button class="toggle-switch" :class="{ on: config.hidden }" :disabled="config.mode !== 'subagent'" @click="updateAgent(name, 'hidden', !config.hidden)"><span class="toggle-knob" /></button></div>
@@ -234,6 +244,16 @@ function commitPerm(name: string) {
             <div class="form-row"><label class="form-label">Temperature</label><input :value="config.temperature ?? ''" type="number" step="0.1" min="0" max="2" class="form-input" @input="updateAgent(name, 'temperature', Number(($event.target as HTMLInputElement).value) || undefined)" /></div>
             <div class="form-row"><label class="form-label">Top P</label><input :value="config.top_p ?? ''" type="number" step="0.01" min="0" max="1" class="form-input" @input="updateAgent(name, 'top_p', Number(($event.target as HTMLInputElement).value) || undefined)" /></div>
             <div class="form-row"><label class="form-label">Steps</label><input :value="config.steps ?? ''" type="number" min="1" class="form-input" @input="updateAgent(name, 'steps', Number(($event.target as HTMLInputElement).value) || undefined)" /></div>
+          </div>
+          <div class="form-row"><label class="form-label">Thinking Variant</label>
+            <select :value="config.variant ?? ''" class="form-input" @change="updateAgent(name, 'variant', ($event.target as HTMLSelectElement).value || undefined)">
+              <option value="">Inherit</option>
+              <option value="low">Low</option>
+              <option value="medium">Medium</option>
+              <option value="high">High</option>
+              <option value="max">Max</option>
+              <option value="thinking">Thinking</option>
+            </select>
           </div>
           <div class="form-row"><label class="form-label">Color</label><input :value="config.color ?? ''" type="text" class="form-input" placeholder="#RRGGBB or theme name" @input="updateAgent(name, 'color', ($event.target as HTMLInputElement).value || undefined)" /></div>
           <div class="form-row"><label class="form-label">Disabled</label><button class="toggle-switch" :class="{ on: config.disable }" @click="updateAgent(name, 'disable', !config.disable)"><span class="toggle-knob" /></button></div>
