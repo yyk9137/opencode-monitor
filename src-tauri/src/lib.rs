@@ -197,9 +197,9 @@ del "%~f0"
         .map_err(|e| format!("Failed to write restart script: {}", e))?;
 
     // Launch the script as a completely detached process
+    // Use cmd /c with start to create a fully independent process
     Command::new("cmd")
-        .args(["/c", "start", "", "/b"])
-        .arg(&script_path)
+        .args(["/c", "start", "restart-monitor", "/MIN", "cmd", "/c", &script_path.to_string_lossy()])
         .stdin(std::process::Stdio::null())
         .stdout(std::process::Stdio::null())
         .stderr(std::process::Stdio::null())
