@@ -33,9 +33,16 @@ onMounted(loadProviders)
 const modelOptions = computed(() => {
   const opts: { value: string; label: string }[] = []
   for (const p of providers.value) {
-    if (!p.models) continue
-    for (const m of p.models) {
-      opts.push({ value: `${p.id}/${m.id}`, label: `${p.id} / ${m.name || m.id}` })
+    const models = p.models
+    if (!models || typeof models !== 'object') continue
+    if (Array.isArray(models)) {
+      for (const m of models) {
+        opts.push({ value: `${p.id}/${m.id}`, label: `${p.id} / ${m.name || m.id}` })
+      }
+    } else {
+      for (const [id, m] of Object.entries(models)) {
+        opts.push({ value: `${p.id}/${id}`, label: `${p.id} / ${(m as { name?: string }).name || id}` })
+      }
     }
   }
   return opts
@@ -71,7 +78,7 @@ function duplicateAgent(name: string) {
   let newName = `${name}-copy`
   let i = 2
   while (configStore.draft.agent[newName]) { newName = `${name}-copy-${i++}` }
-  configStore.draft.agent[newName] = structuredClone(configStore.draft.agent[name])
+  configStore.draft.agent[newName] = JSON.parse(JSON.stringify(configStore.draft.agent[name]))
   configStore.dirtyPaths.add(`agent.${newName}`)
   expanded.value = newName
 }

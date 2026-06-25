@@ -1,6 +1,8 @@
 <script setup lang="ts">
-import { computed, ref } from 'vue'
-import { Plus, Trash2, Package, Folder, FileText, ChevronDown, ChevronRight } from 'lucide-vue-next'
+import { computed, ref, onMounted, watch } from 'vue'
+import { readTextFile, exists } from '@tauri-apps/plugin-fs'
+import { homeDir, join } from '@tauri-apps/api/path'
+import { Plus, Trash2, Package, ChevronDown, ChevronRight } from 'lucide-vue-next'
 import { useConfigStore } from '@/stores/config'
 import JsonEditor from '../JsonEditor.vue'
 
@@ -19,6 +21,97 @@ const fileContent = ref('')
 
 const plugins = computed(() => configStore.draft?.plugin ?? [])
 
+// ── Plugin config files ──────────────────────────────────────────────────
+interface PluginConfigFile {
+  pluginName: string
+  fileName: string
+  path: string
+  content: unknown
+  raw: string
+  exists: boolean
+}
+
+const pluginConfigFiles = ref<PluginConfigFile[]>([])
+const configLoading = ref(false)
+
+// Map plugin names to their config file names
+const PLUGIN_CONFIG_MAP: Record<string, string> = {
+  'oh-my-opencode-slim': 'oh-my-opencode-slim.json',
+  '@cortexkit/aft-opencode': 'aft.jsonc',
+  '@cortexkit/aft-opencode@latest': 'aft.jsonc',
+  '@cortexkit/opencode-magic-context': 'magic-context.json',
+  '@cortexkit/opencode-magic-context@latest': 'magic-context.json',
+}
+
+async function loadPluginConfigs() {
+  configLoading.value = true
+  try {
+    const home = await homeDir()
+    const configDir = await join(home, '.config', 'opencode')
+    const results: PluginConfigFile[] = []
+
+    for (const plugin of plugins.value) {
+      const name = typeof plugin === 'string' ? plugin : plugin[0]
+      // Find matching config file
+      let configFileName: string | undefined
+      for (const [key, val] of Object.entries(PLUGIN_CONFIG_MAP)) {
+        if (name === key || name.startsWith(key.replace('@latest', ''))) {
+          configFileName = val
+          break
+        }
+      }
+      if (!configFileName) continue
+
+      const filePath = await join(configDir, configFileName)
+      const fileExists = await exists(filePath)
+      let content: unknown = null
+      let raw = ''
+
+      if (fileExists) {
+        try {
+          raw = await readTextFile(filePath)
+          // Strip JSONC comments
+          const stripped = raw
+            .replace(/\/\/.*$/gm, '')
+            .replace(/\/\*[\s\S]*?\*\//g, '')
+            .trim()
+          content = JSON.parse(stripped)
+        } catch { /* parse error */ }
+      }
+
+      results.push({
+        pluginName: name,
+        fileName: configFileName,
+        path: filePath,
+        content,
+        raw,
+        exists: fileExists,
+      })
+    }
+
+    pluginConfigFiles.value = results
+  } catch { /* silent */ } finally {
+    configLoading.value = false
+  }
+}
+
+onMounted(loadPluginConfigs)
+watch(() => configStore.draft?.plugin, () => loadPluginConfigs(), { deep: true })
+
+// Track edits to plugin config files (in memory, saved separately)
+const configEdits = ref<Record<string, unknown>>({})
+
+function getConfigContent(pluginName: string): unknown {
+  if (configEdits.value[pluginName] !== undefined) return configEdits.value[pluginName]
+  const file = pluginConfigFiles.value.find(f => f.pluginName === pluginName)
+  return file?.content ?? null
+}
+
+function updateConfigContent(pluginName: string, value: unknown) {
+  configEdits.value[pluginName] = value
+}
+
+// ── Plugin list CRUD ──────────────────────────────────────────────────────
 function updatePlugins(newPlugins: (string | [string, Record<string, unknown>])[]) {
   if (!configStore.draft) return
   configStore.draft.plugin = newPlugins
@@ -35,9 +128,7 @@ function addNpmPlugin() {
   let options: Record<string, unknown> | undefined
   try {
     const parsed = JSON.parse(npmOptions.value.trim() || '{}')
-    if (typeof parsed === 'object' && parsed !== null && !Array.isArray(parsed)) {
-      options = parsed
-    }
+    if (typeof parsed === 'object' && parsed !== null && !Array.isArray(parsed)) options = parsed
   } catch { return }
   updatePlugins([...plugins.value, options ? [spec, options] : spec])
   npmSpec.value = ''
@@ -51,9 +142,7 @@ function addPathPlugin() {
   let options: Record<string, unknown> | undefined
   try {
     const parsed = JSON.parse(pathOptions.value.trim() || '{}')
-    if (typeof parsed === 'object' && parsed !== null && !Array.isArray(parsed)) {
-      options = parsed
-    }
+    if (typeof parsed === 'object' && parsed !== null && !Array.isArray(parsed)) options = parsed
   } catch { return }
   updatePlugins([...plugins.value, options ? [spec, options] : spec])
   pathSpec.value = ''
@@ -64,7 +153,6 @@ function addPathPlugin() {
 function addFilePlugin() {
   const name = fileName.value.trim()
   if (!name || !fileContent.value.trim()) return
-  // File plugins are stored as [name, { content: "..." }] tuple
   updatePlugins([...plugins.value, [name, { content: fileContent.value }]])
   fileName.value = ''
   fileContent.value = ''
@@ -80,43 +168,21 @@ function removePlugin(index: number) {
 function updatePluginName(index: number, name: string) {
   const arr = [...plugins.value]
   const p = arr[index]
-  if (typeof p === 'string') {
-    arr[index] = name
-  } else {
-    arr[index] = [name, p[1]]
-  }
+  if (typeof p === 'string') arr[index] = name
+  else arr[index] = [name, p[1]]
   updatePlugins(arr)
-}
-
-function updatePluginConfig(index: number, config: unknown) {
-  const arr = [...plugins.value]
-  const p = arr[index]
-  if (Array.isArray(p)) {
-    arr[index] = [p[0], config as Record<string, unknown>]
-    updatePlugins(arr)
-  }
 }
 
 function enableConfig(index: number) {
   const arr = [...plugins.value]
   const p = arr[index]
-  if (typeof p === 'string') {
-    arr[index] = [p, {}]
-    updatePlugins(arr)
-  }
+  if (typeof p === 'string') { arr[index] = [p, {}]; updatePlugins(arr) }
 }
 
 function disableConfig(index: number) {
   const arr = [...plugins.value]
   const p = arr[index]
-  if (Array.isArray(p)) {
-    arr[index] = p[0]
-    updatePlugins(arr)
-  }
-}
-
-function toggleExpand(index: number) {
-  expanded.value = expanded.value === index ? null : index
+  if (Array.isArray(p)) { arr[index] = p[0]; updatePlugins(arr) }
 }
 
 function getPluginType(p: string | [string, Record<string, unknown>]): string {
@@ -126,11 +192,8 @@ function getPluginType(p: string | [string, Record<string, unknown>]): string {
   return 'npm'
 }
 
-function getPluginIcon(p: string | [string, Record<string, unknown>]) {
-  const type = getPluginType(p)
-  if (type === 'file') return FileText
-  if (type === 'path') return Folder
-  return Package
+function toggleExpand(index: number) {
+  expanded.value = expanded.value === index ? null : index
 }
 </script>
 
@@ -139,36 +202,50 @@ function getPluginIcon(p: string | [string, Record<string, unknown>]) {
     <h2 class="section-title">Plugins</h2>
 
     <p class="field-hint">
-      Plugins extend OpenCode with custom tools, providers, or behavior.
-      Install from npm, a local path, or create a file-based plugin.
+      插件列表来自 opencode.jsonc。下方显示每个插件的配置文件内容，可直接编辑。
     </p>
 
-    <!-- Plugin list -->
+    <!-- Plugin list with config files -->
     <div v-for="(plugin, i) in plugins" :key="i" class="plugin-card">
       <button class="plugin-header" @click="toggleExpand(i)">
         <component :is="expanded === i ? ChevronDown : ChevronRight" :size="12" />
-        <component :is="getPluginIcon(plugin)" :size="12" class="plugin-type-icon" />
+        <Package :size="12" class="plugin-type-icon" />
         <span class="plugin-name">{{ isTuple(plugin) ? plugin[0] : plugin }}</span>
         <span class="plugin-type-badge" :class="getPluginType(plugin)">{{ getPluginType(plugin) }}</span>
         <span v-if="isTuple(plugin)" class="plugin-config-badge">config</span>
       </button>
 
       <div v-if="expanded === i" class="plugin-body">
+        <!-- Plugin name/spec editor -->
         <div class="form-row">
           <label class="form-label">Name / Spec</label>
           <input :value="isTuple(plugin) ? plugin[0] : plugin" type="text" class="form-input" placeholder="npm package or path" @input="updatePluginName(i, ($event.target as HTMLInputElement).value)" />
         </div>
 
+        <!-- Plugin inline config (tuple) -->
         <div v-if="isTuple(plugin)">
           <div class="config-toolbar">
-            <label class="form-label">Configuration</label>
-            <button class="btn-toggle-config" @click="disableConfig(i)">Remove config</button>
+            <label class="form-label">Inline Config</label>
+            <button class="btn-toggle-config" @click="disableConfig(i)">Remove inline config</button>
           </div>
-          <JsonEditor :model-value="plugin[1]" @update:model-value="updatePluginConfig(i, $event)" @dirty="configStore.dirtyPaths.add('plugin')" />
+          <JsonEditor :model-value="plugin[1]" @update:model-value="updatePlugins(plugins.map((p, idx) => idx === i ? [isTuple(plugin) ? plugin[0] : plugin, $event as Record<string, unknown>] : p) as (string | [string, Record<string, unknown>])[])" @dirty="configStore.dirtyPaths.add('plugin')" />
         </div>
         <div v-else class="no-config">
-          <span class="no-config-hint">No configuration.</span>
-          <button class="btn-enable-config" @click="enableConfig(i)">+ Add config</button>
+          <span class="no-config-hint">No inline config.</span>
+          <button class="btn-enable-config" @click="enableConfig(i)">+ Add inline config</button>
+        </div>
+
+        <!-- Plugin config file (from disk) -->
+        <div v-if="pluginConfigFiles.find(f => f.pluginName === (isTuple(plugin) ? plugin[0] : plugin))" class="config-file-section">
+          <div class="config-toolbar">
+            <label class="form-label">{{ pluginConfigFiles.find(f => f.pluginName === (isTuple(plugin) ? plugin[0] : plugin))?.fileName }}</label>
+            <span class="file-path-hint">{{ pluginConfigFiles.find(f => f.pluginName === (isTuple(plugin) ? plugin[0] : plugin))?.exists ? 'loaded' : 'not found' }}</span>
+          </div>
+          <JsonEditor
+            :model-value="getConfigContent(isTuple(plugin) ? plugin[0] : plugin)"
+            @update:model-value="updateConfigContent(isTuple(plugin) ? plugin[0] : plugin, $event)"
+            @dirty="configStore.dirtyPaths.add('plugin')"
+          />
         </div>
 
         <div class="card-actions">
@@ -182,60 +259,33 @@ function getPluginIcon(p: string | [string, Record<string, unknown>]) {
       <p>No plugins installed.</p>
     </div>
 
-    <!-- Add plugin form (tabbed) -->
+    <!-- Add plugin form -->
     <div v-if="showAddForm" class="add-form">
       <div class="add-tabs">
-        <button class="add-tab" :class="{ active: addTab === 'npm' }" @click="addTab = 'npm'">npm install</button>
-        <button class="add-tab" :class="{ active: addTab === 'path' }" @click="addTab = 'path'">path install</button>
-        <button class="add-tab" :class="{ active: addTab === 'file' }" @click="addTab = 'file'">create file</button>
+        <button class="add-tab" :class="{ active: addTab === 'npm' }" @click="addTab = 'npm'">npm</button>
+        <button class="add-tab" :class="{ active: addTab === 'path' }" @click="addTab = 'path'">path</button>
+        <button class="add-tab" :class="{ active: addTab === 'file' }" @click="addTab = 'file'">file</button>
       </div>
 
-      <!-- npm tab -->
       <div v-if="addTab === 'npm'" class="add-tab-content">
-        <div class="form-row">
-          <label class="form-label">Package Spec</label>
-          <input v-model="npmSpec" class="form-input" placeholder="@cortexkit/magic-context or package@1.0.0" />
-        </div>
-        <div class="form-row">
-          <label class="form-label">Options (JSON)</label>
-          <JsonEditor v-model="npmOptions" @dirty="() => {}" />
-        </div>
+        <div class="form-row"><label class="form-label">Package Spec</label><input v-model="npmSpec" class="form-input" placeholder="@cortexkit/magic-context@latest" /></div>
+        <div class="form-row"><label class="form-label">Options (JSON)</label><JsonEditor v-model="npmOptions" @dirty="() => {}" /></div>
       </div>
-
-      <!-- path tab -->
       <div v-if="addTab === 'path'" class="add-tab-content">
-        <div class="form-row">
-          <label class="form-label">Local Path</label>
-          <input v-model="pathSpec" class="form-input" placeholder="./plugins/my-plugin or /abs/path" />
-        </div>
-        <div class="form-row">
-          <label class="form-label">Options (JSON)</label>
-          <JsonEditor v-model="pathOptions" @dirty="() => {}" />
-        </div>
+        <div class="form-row"><label class="form-label">Local Path</label><input v-model="pathSpec" class="form-input" placeholder="./plugins/my-plugin" /></div>
+        <div class="form-row"><label class="form-label">Options (JSON)</label><JsonEditor v-model="pathOptions" @dirty="() => {}" /></div>
       </div>
-
-      <!-- file tab -->
       <div v-if="addTab === 'file'" class="add-tab-content">
-        <div class="form-row">
-          <label class="form-label">File Name</label>
-          <input v-model="fileName" class="form-input" placeholder="my-plugin.mjs" />
-        </div>
-        <div class="form-row">
-          <label class="form-label">Content</label>
-          <textarea v-model="fileContent" class="form-textarea" rows="12" placeholder="// Plugin code..."></textarea>
-        </div>
+        <div class="form-row"><label class="form-label">File Name</label><input v-model="fileName" class="form-input" placeholder="my-plugin.mjs" /></div>
+        <div class="form-row"><label class="form-label">Content</label><textarea v-model="fileContent" class="form-textarea" rows="12" placeholder="// Plugin code..."></textarea></div>
       </div>
 
       <div class="add-form-actions">
-        <button class="btn-add" @click="addTab === 'npm' ? addNpmPlugin() : addTab === 'path' ? addPathPlugin() : addFilePlugin()">
-          Install
-        </button>
+        <button class="btn-add" @click="addTab === 'npm' ? addNpmPlugin() : addTab === 'path' ? addPathPlugin() : addFilePlugin()">Install</button>
         <button class="btn-cancel" @click="showAddForm = false">Cancel</button>
       </div>
     </div>
-    <button v-else class="btn-add-card" @click="showAddForm = true">
-      <Plus :size="12" /> Add Plugin
-    </button>
+    <button v-else class="btn-add-card" @click="showAddForm = true"><Plus :size="12" /> Add Plugin</button>
   </div>
 </template>
 
@@ -252,7 +302,6 @@ function getPluginIcon(p: string | [string, Record<string, unknown>]) {
 .plugin-name { flex: 1; }
 .plugin-type-badge { font-family: var(--font-mono); font-size: 9px; padding: 1px 4px; border-radius: var(--radius-xs); background: var(--bg-element); color: var(--text-muted); }
 .plugin-type-badge.npm { color: var(--text-accent); }
-.plugin-type-badge.path { color: var(--warning); }
 .plugin-config-badge { font-family: var(--font-mono); font-size: 8px; padding: 1px 3px; border-radius: var(--radius-xs); background: var(--bg-element); color: var(--text-accent); }
 .plugin-body { padding: var(--space-8); background: var(--bg-editor); display: flex; flex-direction: column; gap: var(--space-8); }
 .form-row { display: flex; flex-direction: column; gap: var(--space-6); }
@@ -260,14 +309,14 @@ function getPluginIcon(p: string | [string, Record<string, unknown>]) {
 .form-input { width: 100%; padding: 4px var(--space-8); height: 28px; background: var(--bg-element); border: 1px solid var(--border-variant); border-radius: var(--radius-xs); color: var(--text-primary); font-family: var(--font-ui); font-size: var(--font-size-ui); outline: none; }
 .form-input:focus { background: var(--bg-editor); box-shadow: 0 0 0 1px var(--border-focused); }
 .form-textarea { width: 100%; padding: var(--space-6) var(--space-8); min-height: 200px; background: var(--code-block-bg); border: 1px solid var(--border-variant); border-radius: var(--radius-xs); color: var(--text-primary); font-family: var(--font-mono); font-size: var(--font-size-code); outline: none; resize: vertical; line-height: 1.5; }
-.form-textarea:focus { border-color: var(--border-focused); }
 .config-toolbar { display: flex; align-items: center; justify-content: space-between; margin-bottom: var(--space-6); }
 .btn-toggle-config { background: transparent; border: none; color: var(--text-muted); cursor: pointer; font-size: var(--font-size-small); text-decoration: underline; }
 .btn-toggle-config:hover { color: var(--text-primary); }
 .no-config { display: flex; align-items: center; gap: var(--space-6); padding: var(--space-6) 0; }
 .no-config-hint { font-size: var(--font-size-small); color: var(--text-placeholder); }
 .btn-enable-config { background: transparent; border: none; color: var(--text-accent); cursor: pointer; font-size: var(--font-size-small); text-decoration: underline; }
-.btn-enable-config:hover { color: var(--text-primary); }
+.config-file-section { padding-top: var(--space-8); border-top: 1px solid var(--border-variant); display: flex; flex-direction: column; gap: var(--space-6); }
+.file-path-hint { font-size: var(--font-size-small); color: var(--text-placeholder); }
 .card-actions { display: flex; justify-content: flex-end; }
 .btn-delete { display: inline-flex; align-items: center; gap: 4px; padding: 4px var(--space-8); background: transparent; border: 1px solid var(--error); border-radius: var(--radius-xs); color: var(--error); cursor: pointer; font-size: var(--font-size-small); }
 .btn-delete:hover { background: rgba(217,87,87,0.1); }
