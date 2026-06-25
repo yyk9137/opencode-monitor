@@ -187,9 +187,16 @@ export const useConfigStore = defineStore('config', () => {
         }
       }
 
-      // Write back
+      // Write back (UTF-8 without BOM — Tauri's writeTextFile uses Rust std::fs::write)
       const jsonStr = JSON.stringify(existingConfig, null, 2)
       await writeTextFile(configPath, jsonStr)
+
+      // Verify no BOM was written (safety check)
+      const verifyRaw = await readTextFile(configPath)
+      if (verifyRaw.charCodeAt(0) === 0xFEFF) {
+        // BOM detected — rewrite without BOM
+        await writeTextFile(configPath, verifyRaw.slice(1))
+      }
 
       // Update original to match what we just wrote
       original.value = cloneDeep(draft.value)
