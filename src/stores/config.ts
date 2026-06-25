@@ -2,6 +2,7 @@ import { defineStore } from 'pinia'
 import { ref, shallowRef, computed } from 'vue'
 import { fetch } from '@tauri-apps/plugin-http'
 import { readTextFile, writeTextFile, exists } from '@tauri-apps/plugin-fs'
+import { invoke } from '@tauri-apps/api/core'
 import { homeDir, join } from '@tauri-apps/api/path'
 import type { OpenCodeConfig } from '@/types/opencode-config'
 
@@ -143,7 +144,7 @@ export const useConfigStore = defineStore('config', () => {
     }
   }
 
-  // ── Save config: write to opencode.jsonc, do NOT auto-restart ──────────
+  // ── Save config: write to opencode.jsonc, then restart Zed ─────────────
   // Restart is left to the user — auto-restart would break Zed ACP connection
   // and Monitor's SSE event stream.
   async function saveConfig(): Promise<boolean> {
@@ -194,6 +195,16 @@ export const useConfigStore = defineStore('config', () => {
       original.value = cloneDeep(draft.value)
       dirtyPaths.value = new Set()
       phase.value = 'idle'
+
+      // Auto-restart Zed (OpenCode will restart with new config)
+      // Monitor is a separate process and survives the restart
+      try {
+        await invoke('restart_zed')
+      } catch (e) {
+        // Zed restart failed — config is still saved, user can restart manually
+        lastError.value = { at: Date.now(), phase: 'saving', message: '配置已保存，但 Zed 重启失败: ' + String(e) + '。请手动重启 Zed。' }
+      }
+
       return true
     } catch (e) {
       phase.value = 'idle'

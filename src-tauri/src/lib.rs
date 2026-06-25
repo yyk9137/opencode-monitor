@@ -80,13 +80,63 @@ fn discover_opencode_ports() -> Vec<u32> {
     ports
 }
 
+/// Kill Zed process and relaunch it, so OpenCode restarts with new config.
+#[tauri::command]
+fn restart_zed() -> Result<String, String> {
+    // Kill all Zed processes
+    let kill_result = Command::new("taskkill")
+        .args(["/F", "/IM", "Zed.exe"])
+        .output();
+
+    match kill_result {
+        Ok(output) => {
+            if !output.status.success() {
+                // Zed might not be running, that's ok
+            }
+        }
+        Err(e) => {
+            return Err(format!("Failed to kill Zed: {}", e));
+        }
+    }
+
+    // Wait a moment for processes to die
+    std::thread::sleep(std::time::Duration::from_secs(1));
+
+    // Relaunch Zed (detached, non-blocking)
+    let zed_paths = [
+        "C:\\Program Files\\Zed\\zed.exe",
+        "C:\\Users\\user\\AppData\\Local\\Programs\\Zed\\zed.exe",
+        "zed.exe",
+    ];
+
+    let mut launched = false;
+    for path in &zed_paths {
+        let result = Command::new(path)
+            .stdin(std::process::Stdio::null())
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .spawn();
+
+        if result.is_ok() {
+            launched = true;
+            break;
+        }
+    }
+
+    if launched {
+        Ok("Zed restarted successfully".to_string())
+    } else {
+        Err("Could not find Zed executable. Please restart Zed manually.".to_string())
+    }
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_http::init())
         .plugin(tauri_plugin_fs::init())
-        .invoke_handler(tauri::generate_handler![get_cli_args, discover_opencode_ports])
+        .invoke_handler(tauri::generate_handler![get_cli_args, discover_opencode_ports, restart_zed])
         .setup(|app| {
             // Open devtools automatically in debug builds for diagnostics
             #[cfg(debug_assertions)]
