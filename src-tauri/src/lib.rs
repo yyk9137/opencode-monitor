@@ -1,6 +1,20 @@
 // Learn more about Tauri commands at https://tauri.app/develop/calling-rust/
 
 use std::process::Command;
+use std::os::windows::process::CommandExt;
+
+// Windows process creation flag to hide console windows
+const CREATE_NO_WINDOW: u32 = 0x08000000;
+
+/// Helper trait to add .no_window() to Command for hiding console popups
+trait NoWindow {
+    fn no_window(&mut self) -> &mut Self;
+}
+impl NoWindow for Command {
+    fn no_window(&mut self) -> &mut Self {
+        self.creation_flags(CREATE_NO_WINDOW)
+    }
+}
 
 #[tauri::command]
 fn get_cli_args() -> Vec<String> {
@@ -37,6 +51,7 @@ fn discover_opencode_ports() -> Vec<u32> {
 
     let tasklist = Command::new("tasklist")
         .args(["/FI", "IMAGENAME eq opencode.exe", "/FO", "CSV", "/NH"])
+        .no_window()
         .output();
 
     let opencode_pids: Vec<u32> = match tasklist {
@@ -63,6 +78,7 @@ fn discover_opencode_ports() -> Vec<u32> {
 
     let netstat = Command::new("netstat")
         .args(["-ano", "-p", "TCP"])
+        .no_window()
         .output();
 
     if let Ok(output) = netstat {
@@ -112,6 +128,7 @@ fn set_env_var(name: String, value: String) -> Result<String, String> {
         .stdin(std::process::Stdio::null())
         .stdout(std::process::Stdio::null())
         .stderr(std::process::Stdio::null())
+        .no_window()
         .spawn()
         .map(|_| format!("Environment variable {} set", name))
         .map_err(|e| format!("Failed to spawn setx: {}", e))
@@ -131,6 +148,7 @@ fn delete_env_var(name: String) -> Result<String, String> {
     }
     let result = Command::new("reg")
         .args(["delete", "HKCU\\Environment", "/v", &name, "/f"])
+        .no_window()
         .output();
     match result {
         Ok(output) => {
@@ -169,6 +187,7 @@ fn find_zed_path() -> Option<String> {
     // Try PATH
     let result = Command::new("where")
         .args(["zed.exe"])
+        .no_window()
         .output();
     if let Ok(output) = result {
         if output.status.success() {
@@ -227,7 +246,6 @@ del "%~f0"
     // all processes in the job (including Monitor and its children) are killed.
     // CREATE_BREAKAWAY_FROM_JOB breaks the new process away from the job.
     // If BREAKAWAY fails (access denied), fall back to DETACHED_PROCESS only.
-    use std::os::windows::process::CommandExt;
     const CREATE_NEW_PROCESS_GROUP: u32 = 0x00000200;
     const DETACHED_PROCESS: u32 = 0x00000008;
     const CREATE_BREAKAWAY_FROM_JOB: u32 = 0x01000000;
@@ -236,7 +254,7 @@ del "%~f0"
         .stdin(std::process::Stdio::null())
         .stdout(std::process::Stdio::null())
         .stderr(std::process::Stdio::null())
-        .creation_flags(CREATE_NEW_PROCESS_GROUP | DETACHED_PROCESS | CREATE_BREAKAWAY_FROM_JOB)
+        .creation_flags(CREATE_NEW_PROCESS_GROUP | DETACHED_PROCESS | CREATE_BREAKAWAY_FROM_JOB | CREATE_NO_WINDOW)
         .spawn();
     if launch_result.is_err() {
         // Retry without BREAKAWAY — may fail with access denied
@@ -245,7 +263,7 @@ del "%~f0"
             .stdin(std::process::Stdio::null())
             .stdout(std::process::Stdio::null())
             .stderr(std::process::Stdio::null())
-            .creation_flags(CREATE_NEW_PROCESS_GROUP | DETACHED_PROCESS)
+            .creation_flags(CREATE_NEW_PROCESS_GROUP | DETACHED_PROCESS | CREATE_NO_WINDOW)
             .spawn()
             .map_err(|e| format!("Failed to launch restart script: {}", e))?;
     }
