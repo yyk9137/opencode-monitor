@@ -112,23 +112,30 @@ export const useConfigStore = defineStore('config', () => {
   const configScope = ref<ConfigScope>('global')
   const projectCwd = ref<string | null>(null)
 
-  // Lazily-initialized cache for projectCwd (avoids repeated invoke calls)
+  // Lazily-initialized cache for projectCwd
   let _projectCwd: string | null = null
 
   async function ensureProjectCwd(): Promise<string | null> {
     if (_projectCwd !== null) return _projectCwd
-    try {
-      const args = await invoke<string[]>('get_cli_args')
-      const cwdIdx = args.indexOf('--cwd')
-      if (cwdIdx !== -1 && args[cwdIdx + 1]) {
-        _projectCwd = args[cwdIdx + 1]
-        projectCwd.value = _projectCwd
-        return _projectCwd
-      }
-    } catch {
-      // CLI args not available — fall through
+
+    // 1. Try session store — instances have projectDir from health probe
+    const sessionStore = useSessionStore()
+    const inst = sessionStore.instances.find(i => i.projectDir)
+    if (inst?.projectDir) {
+      _projectCwd = inst.projectDir
+      projectCwd.value = _projectCwd
+      return _projectCwd
     }
-    // Fallback: use Rust current_dir (the working directory when Monitor was launched)
+
+    // 2. Try active session's directory
+    const activeSession = Array.from(sessionStore.sessions.values()).find(s => s.directory)
+    if (activeSession?.directory) {
+      _projectCwd = activeSession.directory
+      projectCwd.value = _projectCwd
+      return _projectCwd
+    }
+
+    // 3. Fallback: Rust current_dir (wherever Monitor was launched from)
     try {
       const cwd = await invoke<string>('get_cwd')
       if (cwd) {
