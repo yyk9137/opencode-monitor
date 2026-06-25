@@ -50,11 +50,29 @@ const PLUGIN_CONFIG_MAP: Record<string, PluginConfigEntry[]> = {
   '@cortexkit/opencode-magic-context@latest': [{ dir: '.config/cortexkit', file: 'magic-context.jsonc' }],
 }
 
-// Also load tui.json (TUI plugin list)
-const TUI_CONFIG: PluginConfigEntry = { dir: '.config/opencode', file: 'tui.json' }
+// tui.json is loaded inline in loadPluginConfigs
 
 function stripJsonComments(text: string): string {
-  return text.replace(/\/\/.*$/gm, '').replace(/\/\*[\s\S]*?\*\//g, '').trim()
+  let result = ''
+  let inString = false
+  let escaped = false
+  let i = 0
+  while (i < text.length) {
+    const char = text[i]
+    const next = text[i + 1]
+    if (inString) {
+      result += char
+      if (escaped) { escaped = false } else if (char === '\\') { escaped = true } else if (char === '"') { inString = false }
+      i++
+      continue
+    }
+    if (char === '"') { inString = true; result += char; i++; continue }
+    if (char === '/' && next === '/') { while (i < text.length && text[i] !== '\n') i++; continue }
+    if (char === '/' && next === '*') { i += 2; while (i < text.length && !(text[i] === '*' && text[i + 1] === '/')) i++; i += 2; continue }
+    result += char
+    i++
+  }
+  return result.trim()
 }
 
 async function tryReadConfigFile(home: string, entry: PluginConfigEntry): Promise<PluginConfigFile | null> {
