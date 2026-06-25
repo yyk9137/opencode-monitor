@@ -30,41 +30,90 @@ fn write_debug_log(lines: String) -> Result<String, String> {
     Ok("Log written".to_string())
 }
 
-/// Discover OpenCode instances by finding opencode processes and their listening ports.
+/// Discover OpenCode instances by finding processes and their listening ports.
+/// Scans for: opencode.exe, Zed.exe children, node.exe with opencode in cmdline.
+/// Also includes HTTP port scan fallback for 4096-4500 range.
 #[tauri::command]
 fn discover_opencode_ports() -> Vec<u32> {
     let mut ports = Vec::new();
 
+    // Strategy 1: Find PIDs of opencode-related processes
+    // - opencode.exe (direct install)
+    // - node.exe (npx opencode or npm opencode)
+    let mut candidate_pids: Vec<u32> = Vec::new();
+
+    // Find opencode.exe processes
     let tasklist = Command::new("tasklist")
-        .args(["/FI", "IMAGENAME eq opencode.exe", "/FO", "CSV", "/NH"])
+        .args(["/FO", "CSV", "/NH"])
         .output();
-
-    let opencode_pids: Vec<u32> = match tasklist {
-        Ok(output) => {
-            let stdout = String::from_utf8_lossy(&output.stdout);
-            stdout
-                .lines()
-                .filter_map(|line| {
-                    let parts: Vec<&str> = line.split(',').collect();
-                    if parts.len() >= 2 {
-                        parts[1].trim_matches('"').parse::<u32>().ok()
-                    } else {
-                        None
+    if let Ok(output) = tasklist {
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        for line in stdout.lines() {
+            let parts: Vec<&str> = line.split(',').collect();
+            if parts.len() >= 2 {
+                let name = parts[0].trim_matches('"');
+                let pid = parts[1].trim_matches('"').parse::<u32>().ok();
+                if let Some(pid) = pid {
+                    if name.eq_ignore_ascii_case("opencode.exe") {
+                        candidate_pids.push(pid);
                     }
-                })
-                .collect()
+                    // For node.exe, we can't easily check cmdline via tasklist
+                    // so we include ALL node.exe PIDs — netstat will filter
+                    // by whether they have listening ports in OpenCode range
+                    if name.eq_ignore_ascii_case("node.exe") {
+                        candidate_pids.push(pid);
+                    }
+                }
+            }
         }
-        Err(_) => Vec::new(),
-    };
-
-    if opencode_pids.is_empty() {
-        return ports;
     }
 
+    // Strategy 2: Find Zed.exe child processes using wmic
+    // Zed spawns OpenCode as child processes via ACP
+    let wmic = Command::new("wmic")
+        .args(["process", "where", "ParentProcessId=", "get", "ProcessId,Name"])
+        .output();
+    // Also try: find all Zed PIDs first, then get their children
+    let zed_pids: Vec<u32> = {
+        let mut zed = Vec::new();
+        let tl = Command::new("tasklist")
+            .args(["/FI", "IMAGENAME eq Zed.exe", "/FO", "CSV", "/NH"])
+            .output();
+        if let Ok(output) = tl {
+            let stdout = String::from_utf8_lossy(&output.stdout);
+            for line in stdout.lines() {
+                let parts: Vec<&str> = line.split(',').collect();
+                if parts.len() >= 2 {
+                    if let Ok(pid) = parts[1].trim_matches('"').parse::<u32>() {
+                        zed.push(pid);
+                    }
+                }
+            }
+        }
+        zed
+    };
+    // Get child processes of each Zed PID
+    for zed_pid in &zed_pids {
+        let wmic_child = Command::new("wmic")
+            .args(["process", "where", &format!("ParentProcessId={}", zed_pid), "get", "ProcessId"])
+            .output();
+        if let Ok(output) = wmic_child {
+            let stdout = String::from_utf8_lossy(&output.stdout);
+            for line in stdout.lines() {
+                let trimmed = line.trim();
+                if let Ok(pid) = trimmed.parse::<u32>() {
+                    if pid != *zed_pid && !candidate_pids.contains(&pid) {
+                        candidate_pids.push(pid);
+                    }
+                }
+            }
+        }
+    }
+
+    // Strategy 3: netstat — find listening ports for candidate PIDs
     let netstat = Command::new("netstat")
         .args(["-ano", "-p", "TCP"])
         .output();
-
     if let Ok(output) = netstat {
         let stdout = String::from_utf8_lossy(&output.stdout);
         for line in stdout.lines() {
@@ -74,7 +123,8 @@ fn discover_opencode_ports() -> Vec<u32> {
             }
             let pid = trimmed.split_whitespace().last().and_then(|s| s.parse::<u32>().ok());
             if let Some(pid) = pid {
-                if !opencode_pids.contains(&pid) {
+                // Check if this PID is in our candidate list
+                if !candidate_pids.contains(&pid) {
                     continue;
                 }
                 let parts: Vec<&str> = trimmed.split_whitespace().collect();
@@ -91,7 +141,31 @@ fn discover_opencode_ports() -> Vec<u32> {
         }
     }
 
+    // Strategy 4: HTTP port scan fallback for common OpenCode range
+    // This catches instances that weren't found via process scan
+    // (e.g. different process names, WSL, Docker, etc.)
+    // Scan 4096-4500 in parallel-ish fashion (sequential but fast)
+    // Only scan ports we don't already have
+    let scan_range: Vec<u32> = (4096..=4500)
+        .filter(|p| !ports.contains(p))
+        .collect();
+    for port in scan_range {
+        // Use a very short timeout connection attempt
+        let addr = format!("127.0.0.1:{}", port);
+        if let Ok(stream) = std::net::TcpStream::connect_timeout(
+            &addr.parse().unwrap_or_else(|_| std::net::SocketAddr::from(([127, 0, 0, 1], 4096))),
+            std::time::Duration::from_millis(50),
+        ) {
+            drop(stream);
+            // Port is open — add it (the frontend will verify via /global/health)
+            if !ports.contains(&port) {
+                ports.push(port);
+            }
+        }
+    }
+
     ports.sort();
+    ports.dedup();
     ports
 }
 

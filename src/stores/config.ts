@@ -196,8 +196,10 @@ export const useConfigStore = defineStore('config', () => {
     targetUrl.value = url
   }
 
-    // ── Read config: pure file-based (no API dependency) ──────────────────
-  // Global scope: read opencode.jsonc + slim + magic-context from disk
+    // ── Read config: hybrid (file for env vars + API for plugin agents/MCP) ──
+  // Global scope: read opencode.jsonc from disk (preserves {env:VAR} format)
+  //               + GET /config API (for plugin-registered agents/MCP)
+  //               → merge: API agents/MCP only added if not in file config
   // Project scope: <cwd>/.opencode/config.json (plain JSON)
   async function fetchConfig(): Promise<boolean> {
     if (phase.value !== 'idle') return false
@@ -220,7 +222,7 @@ export const useConfigStore = defineStore('config', () => {
 
         const home = await homeDir()
 
-        // 2. Read oh-my-opencode-slim.json — merge preset agents into config.agent
+        // 2. Read oh-my-opencode-slim.json — track slim-managed agents
         const slimPath = await join(home, '.config', 'opencode', 'oh-my-opencode-slim.json')
         slimConfigPath.value = slimPath
         slimAgentIds.value = new Set()
@@ -229,23 +231,18 @@ export const useConfigStore = defineStore('config', () => {
           try {
             const slimRaw = await readTextFile(slimPath)
             slimOriginalText.value = slimRaw
-            const slim = JSON.parse(slimRaw) as { preset?: string; presets?: Record<string, Record<string, { model?: string; variant?: string; skills?: string[]; mcps?: string[]; options?: Record<string, unknown> }>> }
+            const slim = JSON.parse(slimRaw) as { preset?: string; presets?: Record<string, Record<string, unknown>> }
             slimActivePreset.value = slim.preset ?? ''
             const presetAgents = slim.presets?.[slimActivePreset.value] ?? {}
-            if (!config.agent) config.agent = {}
-            for (const [agentId, agentDef] of Object.entries(presetAgents)) {
+            for (const agentId of Object.keys(presetAgents)) {
               slimAgentIds.value.add(agentId)
-              // Only add if not already in opencode.jsonc (file takes priority for overrides)
-              if (!config.agent[agentId]) {
-                config.agent[agentId] = agentDef as never
-              }
             }
           } catch {
             // slim config parse failure — skip
           }
         }
 
-        // 3. Read magic-context.jsonc — merge agent configs into config.agent
+        // 3. Read magic-context.jsonc — track magic-context-managed agents
         const magicPath = await join(home, '.config', 'cortexkit', 'magic-context.jsonc')
         magicConfigPath.value = magicPath
         magicAgentIds.value = new Set()
@@ -255,22 +252,59 @@ export const useConfigStore = defineStore('config', () => {
             const magicRaw = await readTextFile(magicPath)
             magicOriginalText.value = magicRaw
             const magic = parseJsonc(magicRaw) as Record<string, unknown>
-            if (!config.agent) config.agent = {}
             for (const key of Object.keys(magic)) {
               if (typeof magic[key] === 'object' && magic[key] !== null && !Array.isArray(magic[key])) {
                 const obj = magic[key] as Record<string, unknown>
-                // Heuristic: if it has model or fallback_models, it's an agent config
                 if ('model' in obj || 'fallback_models' in obj || 'variant' in obj) {
                   magicAgentIds.value.add(key)
-                  // Only add if not already in config (file takes priority)
-                  if (!config.agent[key]) {
-                    config.agent[key] = obj as never
-                  }
                 }
               }
             }
           } catch {
             // magic-context parse failure — skip
+          }
+        }
+
+        // 4. Try GET /config API for plugin-registered agents/MCP
+        //    Discover OpenCode instance via HTTP port scan (no process name dependency)
+        if (!targetUrl.value) {
+          try {
+            const ports = await invoke<number[]>('discover_opencode_ports')
+            if (ports.length > 0) {
+              targetUrl.value = 'http://127.0.0.1:' + ports[0]
+            }
+          } catch {
+            // Discovery failed — config will only have file-based agents
+          }
+        }
+        if (targetUrl.value) {
+          try {
+            const resp = await fetch(targetUrl.value + '/config')
+            if (resp.ok) {
+              const apiConfig = (await resp.json()) as OpenCodeConfig
+              // Merge agents from API (plugin-registered like explorer, historian, etc.)
+              if (!config.agent) config.agent = {}
+              if (apiConfig.agent) {
+                for (const [agentId, agentDef] of Object.entries(apiConfig.agent)) {
+                  // Only add agents not already in file config (file takes priority)
+                  if (!config.agent[agentId]) {
+                    config.agent[agentId] = agentDef
+                  }
+                }
+              }
+              // Merge MCP servers from API
+              if (!config.mcp) config.mcp = {}
+              if (apiConfig.mcp) {
+                for (const [mcpId, mcpDef] of Object.entries(apiConfig.mcp)) {
+                  if (!config.mcp[mcpId]) {
+                    config.mcp[mcpId] = mcpDef
+                  }
+                }
+              }
+              // Note: apiKey/headers NOT merged from API — file {env:VAR} preserved
+            }
+          } catch {
+            // API not available — config only has file-based data
           }
         }
       } else {
