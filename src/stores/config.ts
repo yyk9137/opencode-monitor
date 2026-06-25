@@ -304,14 +304,25 @@ export const useConfigStore = defineStore('config', () => {
         }
 
         if (apiConfig) {
-          // Merge agents from API (plugin-registered agents like explorer, historian, etc.)
+          // Merge agents from API — API has complete definitions (prompt, description, etc.)
+          // For slim/magic agents: API data replaces slim file data (API is more complete)
+          // For opencode.jsonc agents: user overrides take priority (disable, etc.)
           if (!config.agent) config.agent = {}
           if (apiConfig.agent) {
-            for (const [agentId, agentDef] of Object.entries(apiConfig.agent)) {
-              // Only add agents that don't exist in file config (file takes priority)
-              if (!config.agent[agentId]) {
-                config.agent[agentId] = agentDef
+            for (const [agentId, apiDef] of Object.entries(apiConfig.agent)) {
+              const existing = config.agent[agentId]
+              if (existing && slimAgentIds.value.has(agentId)) {
+                // Slim agent: API has full definition (prompt/description), merge over file data
+                // But keep fields from opencode.jsonc overrides (like disable)
+                config.agent[agentId] = { ...apiDef, ...existing }
+              } else if (existing && magicAgentIds.value.has(agentId)) {
+                // Magic agent: same — API is more complete
+                config.agent[agentId] = { ...apiDef, ...existing }
+              } else if (!existing) {
+                // Not in any file config — add from API
+                config.agent[agentId] = apiDef
               }
+              // If existing and not slim/magic — it's an opencode.jsonc native agent, keep as-is
             }
           }
           // Merge MCP servers from API
