@@ -151,16 +151,13 @@ function confirmAddProvider() {
 
 async function softDeleteProvider(id: string) {
   if (!configStore.draft?.provider) return
-  // Check if apiKey uses env var format and extract var name for cleanup
-  const apiKey = configStore.draft.provider[id]?.options?.apiKey
-  if (typeof apiKey === 'string' && apiKey.startsWith('{env:') && apiKey.endsWith('}')) {
-    const varName = apiKey.slice(5, -1)
-    // Delete the env var from registry (best-effort, don't block on failure)
-    try {
-      await invoke('delete_env_var', { name: varName })
-    } catch {
-      // Ignore — env var may not exist or deletion failed
-    }
+  // Compute env var name from provider ID using naming convention
+  const varName = id.toUpperCase().replace(/[^A-Z0-9]/g, '_') + '_API_KEY'
+  // Delete the env var from registry (best-effort, don't block on failure)
+  try {
+    await invoke('delete_env_var', { name: varName })
+  } catch {
+    // Ignore — env var may not exist or deletion failed
   }
   // Delete from draft (UI removes the card immediately)
   delete configStore.draft.provider[id]
