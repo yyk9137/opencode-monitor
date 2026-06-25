@@ -188,11 +188,14 @@ fn restart_zed_and_monitor() -> Result<String, String> {
 
     // Build the batch script (only restarts Zed, not Monitor —
     // Monitor should be started via Zed task Ctrl+Shift+M to inherit cwd)
+    // Use ping for delays instead of timeout — timeout depends on the console
+    // and may be killed when the parent console (Zed) is terminated.
+    // ping is a standalone process that doesn't depend on console lifetime.
     let script = format!(
         r#"@echo off
-timeout /t 2 /nobreak >nul
+ping 127.0.0.1 -n 3 >nul
 taskkill /F /IM Zed.exe >nul 2>&1
-timeout /t 1 /nobreak >nul
+ping 127.0.0.1 -n 2 >nul
 start "" "{zed_path}"
 del "%~f0"
 "#,
