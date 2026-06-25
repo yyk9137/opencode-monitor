@@ -157,6 +157,12 @@ export const useConfigStore = defineStore('config', () => {
   // Original slim config text (for comment-preserving modify)
   const slimOriginalText = ref<string>('')
 
+  // ── Magic-context config tracking ──────────────────────────────────────
+  // Agents defined in magic-context.jsonc (historian, dreamer, sidekick)
+  const magicConfigPath = ref<string | null>(null)
+  const magicAgentIds = ref<Set<string>>(new Set())
+  const magicOriginalText = ref<string>('')
+
   // ── Operation state ──────────────────────────────────────────────────────
   const phase = ref<ConfigPhase>('idle')
 
@@ -263,6 +269,31 @@ export const useConfigStore = defineStore('config', () => {
           }
         }
 
+        // 3b. Read magic-context.jsonc to identify magic-context-managed agents
+        const magicPath = await join(home, '.config', 'cortexkit', 'magic-context.jsonc')
+        magicConfigPath.value = magicPath
+        magicAgentIds.value = new Set()
+        magicOriginalText.value = ''
+        if (await exists(magicPath)) {
+          try {
+            const magicRaw = await readTextFile(magicPath)
+            magicOriginalText.value = magicRaw
+            const magic = parseJsonc(magicRaw) as Record<string, unknown>
+            // Magic-context agents are top-level objects: historian, dreamer, sidekick
+            for (const key of Object.keys(magic)) {
+              if (typeof magic[key] === 'object' && magic[key] !== null && !Array.isArray(magic[key])) {
+                const obj = magic[key] as Record<string, unknown>
+                // Heuristic: if it has model or fallback_models, it's an agent config
+                if ('model' in obj || 'fallback_models' in obj || 'variant' in obj) {
+                  magicAgentIds.value.add(key)
+                }
+              }
+            }
+          } catch {
+            // magic-context parse failure — skip
+          }
+        }
+
         if (apiConfig) {
           // Merge agents from API (plugin-registered agents like explorer, historian, etc.)
           if (!config.agent) config.agent = {}
@@ -342,17 +373,24 @@ export const useConfigStore = defineStore('config', () => {
 
         console.log(`[saveConfig:global] ${diffs.length} field-level changes detected`)
 
-        // Separate diffs: slim-managed agent changes vs opencode.jsonc changes
+        // Separate diffs: slim-managed, magic-context-managed, vs opencode.jsonc changes
         const slimDiffs: typeof diffs = []
+        const magicDiffs: typeof diffs = []
         const opencodeDiffs: typeof diffs = []
         for (const diff of diffs) {
-          // Check if this is an agent change that belongs to slim config
+          // Check if this is an agent change that belongs to a plugin config
           if (diff.path[0] === 'agent' && diff.path.length >= 2) {
             const agentId = diff.path[1] as string
             if (slimAgentIds.value.has(agentId)) {
               // Route to slim config: agent.xxx → presets.{activePreset}.xxx
               const slimPath = ['presets', slimActivePreset.value, ...diff.path.slice(1)]
               slimDiffs.push({ ...diff, path: slimPath })
+              continue
+            }
+            if (magicAgentIds.value.has(agentId)) {
+              // Route to magic-context config: agent.xxx → xxx (strip agent. prefix)
+              const magicPath = [...diff.path.slice(1)]
+              magicDiffs.push({ ...diff, path: magicPath })
               continue
             }
           }
@@ -404,6 +442,30 @@ export const useConfigStore = defineStore('config', () => {
             const slimVerify = await readTextFile(slimConfigPath.value)
             if (slimVerify.charCodeAt(0) === 0xFEFF) {
               await writeTextFile(slimConfigPath.value, slimVerify.slice(1))
+            }
+          }
+        }
+
+        // Apply magic-context changes (magic-context.jsonc)
+        if (magicDiffs.length > 0 && magicConfigPath.value) {
+          let magicText = magicOriginalText.value || '{}'
+          let magicApplied = 0
+          for (const diff of magicDiffs) {
+            try {
+              const edits = modifyJsonc(magicText, diff.path, diff.value, { formattingOptions })
+              magicText = applyJsoncEdits(magicText, edits)
+              magicApplied++
+            } catch {
+              // modify may fail for complex paths — skip
+            }
+          }
+          console.log(`[saveConfig:magic] applied ${magicApplied}/${magicDiffs.length} changes to magic-context.jsonc`)
+          if (magicApplied > 0) {
+            await writeTextFile(magicConfigPath.value, magicText)
+            magicOriginalText.value = magicText
+            const magicVerify = await readTextFile(magicConfigPath.value)
+            if (magicVerify.charCodeAt(0) === 0xFEFF) {
+              await writeTextFile(magicConfigPath.value, magicVerify.slice(1))
             }
           }
         }
