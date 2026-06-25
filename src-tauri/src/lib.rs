@@ -119,54 +119,121 @@ fn get_env_var(name: String) -> Option<String> {
     std::env::var(&name).ok()
 }
 
-/// Kill Zed process and relaunch it, so OpenCode restarts with new config.
+/// Trigger OpenCode restart by updating a timestamp env var in Zed's settings.json.
+/// Zed detects the agent_servers settings change and automatically reconnects,
+/// spawning a fresh OpenCode process with the updated config.
+/// This does NOT kill Zed — it stays running, only the ACP connection restarts.
 #[tauri::command]
-fn restart_zed() -> Result<String, String> {
-    // Kill all Zed processes
-    let kill_result = Command::new("taskkill")
-        .args(["/F", "/IM", "Zed.exe"])
-        .output();
+fn restart_opencode_via_zed() -> Result<String, String> {
+    use std::io::{Read, Write};
 
-    match kill_result {
-        Ok(output) => {
-            if !output.status.success() {
-                // Zed might not be running, that's ok
+    // Locate Zed settings.json
+    let appdata = std::env::var("APPDATA").map_err(|_| "APPDATA not set".to_string())?;
+    let settings_path = std::path::PathBuf::from(&appdata)
+        .join("Zed")
+        .join("settings.json");
+
+    if !settings_path.exists() {
+        return Err(format!("Zed settings.json not found at {:?}", settings_path));
+    }
+
+    // Read the raw file content (JSONC — preserve comments)
+    let mut content = String::new();
+    {
+        let mut file = std::fs::File::open(&settings_path)
+            .map_err(|e| format!("Failed to open settings.json: {}", e))?;
+        file.read_to_string(&mut content)
+            .map_err(|e| format!("Failed to read settings.json: {}", e))?;
+    }
+
+    // Generate timestamp (Unix epoch milliseconds)
+    let timestamp = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_millis().to_string())
+        .unwrap_or_else(|_| "0".to_string());
+
+    // We need to update agent_servers.OpenCode.env.MONITOR_CONFIG_UPDATED_AT
+    // Strategy:
+    // 1. If MONITOR_CONFIG_UPDATED_AT already exists → replace its value
+    // 2. If "env": {} exists → replace with env containing the timestamp
+    // 3. If "env": {} doesn't exist → error (user needs to configure agent_servers first)
+
+    let new_env = format!(
+        "\"env\": {{ \"MONITOR_CONFIG_UPDATED_AT\": \"{}\" }}",
+        timestamp
+    );
+
+    let updated = if content.contains("MONITOR_CONFIG_UPDATED_AT") {
+        // Replace existing timestamp value
+        // Find: "MONITOR_CONFIG_UPDATED_AT": "old_value"
+        // Replace with: "MONITOR_CONFIG_UPDATED_AT": "new_timestamp"
+        let key = "\"MONITOR_CONFIG_UPDATED_AT\"";
+        if let Some(pos) = content.find(key) {
+            let rest = &content[pos..];
+            // Find the colon after the key
+            if let Some(colon_pos) = rest.find(':') {
+                let after_colon = &rest[colon_pos + 1..];
+                // Find the opening quote of the value
+                if let Some(q1) = after_colon.find('"') {
+                    let after_q1 = &after_colon[q1 + 1..];
+                    // Find the closing quote
+                    if let Some(q2) = after_q1.find('"') {
+                        let abs_start = pos + colon_pos + 1 + q1 + 1;
+                        let abs_end = pos + colon_pos + 1 + q1 + 1 + q2;
+                        content.replace_range(abs_start..abs_end, &timestamp);
+                        true
+                    } else {
+                        false
+                    }
+                } else {
+                    false
+                }
+            } else {
+                false
             }
+        } else {
+            false
         }
-        Err(e) => {
-            return Err(format!("Failed to kill Zed: {}", e));
-        }
-    }
-
-    // Wait a moment for processes to die
-    std::thread::sleep(std::time::Duration::from_secs(1));
-
-    // Relaunch Zed (detached, non-blocking)
-    let zed_paths = [
-        "C:\\Program Files\\Zed\\zed.exe",
-        "C:\\Users\\user\\AppData\\Local\\Programs\\Zed\\zed.exe",
-        "zed.exe",
-    ];
-
-    let mut launched = false;
-    for path in &zed_paths {
-        let result = Command::new(path)
-            .stdin(std::process::Stdio::null())
-            .stdout(std::process::Stdio::null())
-            .stderr(std::process::Stdio::null())
-            .spawn();
-
-        if result.is_ok() {
-            launched = true;
-            break;
-        }
-    }
-
-    if launched {
-        Ok("Zed restarted successfully".to_string())
+    } else if content.contains("\"env\": {}") {
+        // Replace empty env object (with space)
+        content = content.replacen("\"env\": {}", &new_env, 1);
+        true
+    } else if content.contains("\"env\":{}") {
+        // Replace empty env object (no space)
+        content = content.replacen("\"env\":{}", &new_env, 1);
+        true
     } else {
-        Err("Could not find Zed executable. Please restart Zed manually.".to_string())
+        false
+    };
+
+    if !updated {
+        return Err(
+            "Could not find env object in agent_servers.OpenCode to update. \
+             Please ensure Zed settings.json has agent_servers.OpenCode.env configured."
+                .to_string(),
+        );
     }
+
+    // Write back (UTF-8 without BOM)
+    {
+        let mut file = std::fs::File::create(&settings_path)
+            .map_err(|e| format!("Failed to create settings.json: {}", e))?;
+        file.write_all(content.as_bytes())
+            .map_err(|e| format!("Failed to write settings.json: {}", e))?;
+    }
+
+    // Verify no BOM was written
+    let verify = std::fs::read(&settings_path)
+        .map_err(|e| format!("Failed to verify: {}", e))?;
+    if verify.len() >= 3 && verify[0] == 0xEF && verify[1] == 0xBB && verify[2] == 0xBF {
+        std::fs::write(&settings_path, &verify[3..])
+            .map_err(|e| format!("Failed to strip BOM: {}", e))?;
+    }
+
+    Ok(format!(
+        "Updated MONITOR_CONFIG_UPDATED_AT to {}, Zed will auto-reconnect OpenCode",
+        timestamp
+    ))
 }
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
@@ -175,7 +242,13 @@ pub fn run() {
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_http::init())
         .plugin(tauri_plugin_fs::init())
-        .invoke_handler(tauri::generate_handler![get_cli_args, discover_opencode_ports, restart_zed, set_env_var, get_env_var])
+        .invoke_handler(tauri::generate_handler![
+            get_cli_args,
+            discover_opencode_ports,
+            restart_opencode_via_zed,
+            set_env_var,
+            get_env_var
+        ])
         .setup(|app| {
             // Open devtools automatically in debug builds for diagnostics
             #[cfg(debug_assertions)]

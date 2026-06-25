@@ -232,13 +232,15 @@ export const useConfigStore = defineStore('config', () => {
       dirtyPaths.value = new Set()
       phase.value = 'idle'
 
-      // 5. Auto-restart Zed (OpenCode will restart with new config)
-      // Monitor is a separate process and survives the restart
+      // Auto-restart OpenCode by updating Zed's agent_servers env timestamp.
+      // Zed detects the settings change and auto-reconnects the ACP server,
+      // spawning a fresh OpenCode process with the updated config.
+      // Monitor is a separate process and survives the restart.
       try {
-        await invoke('restart_zed')
+        await invoke('restart_opencode_via_zed')
       } catch (e) {
-        // Zed restart failed — config is still saved, user can restart manually
-        lastError.value = { at: Date.now(), phase: 'saving', message: '配置已保存，但 Zed 重启失败: ' + String(e) + '。请手动重启 Zed。' }
+        // Zed settings update failed — config is still saved, user can restart manually
+        lastError.value = { at: Date.now(), phase: 'saving', message: '配置已保存，但 OpenCode 重启失败: ' + String(e) + '。请手动重启 OpenCode。' }
       }
 
       return true
