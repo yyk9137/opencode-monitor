@@ -7,6 +7,13 @@ fn get_cli_args() -> Vec<String> {
     std::env::args().collect()
 }
 
+/// Get the current working directory of the Monitor process.
+/// Used as fallback when --cwd CLI arg is not provided.
+#[tauri::command]
+fn get_cwd() -> Option<String> {
+    std::env::current_dir().ok().map(|p| p.to_string_lossy().to_string())
+}
+
 /// Discover OpenCode instances by finding opencode processes and their listening ports.
 #[tauri::command]
 fn discover_opencode_ports() -> Vec<u32> {
@@ -220,6 +227,7 @@ pub fn run() {
         .plugin(tauri_plugin_fs::init())
         .invoke_handler(tauri::generate_handler![
             get_cli_args,
+            get_cwd,
             discover_opencode_ports,
             restart_zed_and_monitor,
             set_env_var,

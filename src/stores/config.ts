@@ -127,6 +127,17 @@ export const useConfigStore = defineStore('config', () => {
     } catch {
       // CLI args not available — fall through
     }
+    // Fallback: use Rust current_dir (the working directory when Monitor was launched)
+    try {
+      const cwd = await invoke<string>('get_cwd')
+      if (cwd) {
+        _projectCwd = cwd
+        projectCwd.value = cwd
+        return cwd
+      }
+    } catch {
+      // get_cwd not available
+    }
     _projectCwd = null
     projectCwd.value = null
     return null
@@ -191,6 +202,31 @@ export const useConfigStore = defineStore('config', () => {
         // JSONC — use jsonc-parser.parse() to handle comments
         const parsed = parseJsonc(rawText)
         config = (parsed ?? {}) as OpenCodeConfig
+
+        // Merge plugin configs for display (read-only — saving only writes to opencode.jsonc)
+        const home = await homeDir()
+        // oh-my-opencode-slim.json: plugin agents
+        const slimPath = await join(home, '.config', 'opencode', 'oh-my-opencode-slim.json')
+        if (await exists(slimPath)) {
+          try {
+            const slimRaw = await readTextFile(slimPath)
+            const slim = JSON.parse(slimRaw) as { presets?: Record<string, { agents?: Record<string, unknown> }> }
+            // Merge agents from active preset into config.agent for display
+            if (!config.agent) config.agent = {}
+            for (const preset of Object.values(slim.presets ?? {})) {
+              if (preset.agents) {
+                for (const [agentId, agentDef] of Object.entries(preset.agents)) {
+                  // Only add if not already in config (don't override user config)
+                  if (!config.agent![agentId]) {
+                    config.agent![agentId] = agentDef as never
+                  }
+                }
+              }
+            }
+          } catch {
+            // Plugin config parse failure — skip
+          }
+        }
       } else {
         const cwd = await ensureProjectCwd()
         if (!cwd) {
