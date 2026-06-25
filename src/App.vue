@@ -37,6 +37,18 @@ watch(() => configStore.panelOpen, (open, wasOpen) => {
   }
 });
 
+// ── Diagnostic logger — writes to %TEMP%\monitor-debug.log (for release builds without devtools) ──
+const debugLog: string[] = []
+function dbg(msg: string) {
+  const line = `[${new Date().toISOString()}] ${msg}`
+  console.log(line)
+  debugLog.push(line)
+  // Write to file every 10 lines
+  if (debugLog.length % 10 === 0) {
+    invoke('write_debug_log', { lines: debugLog.join('\n') }).catch(() => {})
+  }
+}
+
 async function toggleMaximize() {
   await appWindow.toggleMaximize();
   isMaximized.value = await appWindow.isMaximized();
@@ -53,10 +65,13 @@ const scanNotice = ref<string>("");
 
 async function orchestrate(): Promise<void> {
   scanNotice.value = "";
+  dbg('orchestrate: starting scan')
   let discovered: Awaited<ReturnType<typeof scan>>;
   try {
     discovered = await scan();
+    dbg(`orchestrate: scan found ${discovered.length} instances: ${discovered.map(i => i.url).join(', ')}`)
   } catch (err) {
+    dbg(`orchestrate: scan failed: ${err}`)
     console.error("[App] scan failed", err);
     scanNotice.value = err instanceof Error ? err.message : "Scan failed";
     disconnectAll();
@@ -64,46 +79,65 @@ async function orchestrate(): Promise<void> {
   }
 
   const urls = discovered.map((i) => i.url);
+  dbg(`orchestrate: urls = ${JSON.stringify(urls)}`)
 
   if (urls.length === 0) {
-    // No servers up — close everything down so the UI reflects truth.
+    dbg('orchestrate: no instances found, disconnecting')
     disconnectAll();
     return;
   }
 
   try {
     await bootstrap(urls);
+    dbg('orchestrate: bootstrap done')
   } catch (err) {
+    dbg(`orchestrate: bootstrap failed: ${err}`)
     console.error("[App] bootstrap failed", err);
     bootstrapError.value =
       err instanceof Error ? err.message : "Bootstrap failed";
   }
 
+  dbg('orchestrate: connecting SSE')
   connectAll(urls);
+  dbg('orchestrate: connectAll returned')
 }
 
 onMounted(async () => {
   isMaximized.value = await appWindow.isMaximized();
+  dbg('App mounted')
 
   // Read --cwd CLI arg (passed by Zed task: --cwd $ZED_WORKTREE_ROOT).
   try {
     const args = await invoke<string[]>("get_cli_args");
-    console.log("[App] CLI args =", args);
+    dbg(`CLI args = ${JSON.stringify(args)}`)
     const cwdIdx = args.indexOf("--cwd");
     if (cwdIdx !== -1 && args[cwdIdx + 1]) {
-      store.cwdFilter = args[cwdIdx + 1];
-      console.log("[App] cwdFilter set to =", store.cwdFilter);
+      let cwd = args[cwdIdx + 1];
+      // If --cwd points to a file (not a directory), use its parent directory
+      // This happens when Zed's $ZED_WORKTREE_ROOT resolves to a file path
+      // e.g. when Zed opened a single file rather than a project folder
+      if (cwd.includes('.') && !cwd.endsWith('\\') && !cwd.endsWith('/')) {
+        const lastSep = Math.max(cwd.lastIndexOf('\\'), cwd.lastIndexOf('/'));
+        if (lastSep > 0) {
+          cwd = cwd.substring(0, lastSep);
+        }
+      }
+      store.cwdFilter = cwd;
+      dbg(`cwdFilter set to = ${store.cwdFilter}`)
     } else {
-      console.log("[App] no --cwd arg, cwdFilter =", store.cwdFilter);
+      dbg('no --cwd arg')
     }
   } catch {
-    // CLI args not available — show all sessions
-    console.log("[App] get_cli_args failed, cwdFilter =", store.cwdFilter);
+    dbg('get_cli_args failed')
   }
 
-  // Initial scan → bootstrap → connect.
+  dbg('starting orchestrate')
   await orchestrate();
+  dbg('orchestrate done, starting stuck detection')
   startWatching();
+  dbg('onMounted complete')
+  // Flush debug log
+  invoke('write_debug_log', { lines: debugLog.join('\n') }).catch(() => {})
 });
 
 onBeforeUnmount(() => {

@@ -420,7 +420,7 @@ export const useSessionStore = defineStore('session', () => {
     // Normalize paths: strip trailing separators, unify to backslash,
     // lowercase for case-insensitive comparison (Windows is case-insensitive).
     const cwd = cwdFilter.value
-    const filtered = cwd
+    let filtered = cwd
       ? all.filter(s => {
           const normalize = (p: string) => p.replace(/[\\/]+$/, '').replace(/\//g, '\\').toLowerCase()
           const sessionDir = normalize(s.directory)
@@ -428,6 +428,10 @@ export const useSessionStore = defineStore('session', () => {
           return sessionDir === normalizedCwd || sessionDir.startsWith(normalizedCwd + '\\')
         })
       : all
+    // If cwd filter matches nothing, show all sessions (better UX than empty list)
+    if (filtered.length === 0 && all.length > 0) {
+      filtered = all
+    }
     const childrenMap = new Map<string, SessionNode[]>()
     const topLevel: SessionNode[] = []
 

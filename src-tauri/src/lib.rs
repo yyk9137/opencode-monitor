@@ -14,6 +14,22 @@ fn get_cwd() -> Option<String> {
     std::env::current_dir().ok().map(|p| p.to_string_lossy().to_string())
 }
 
+/// Write debug log lines to %TEMP%\monitor-debug.log (for release builds without devtools)
+#[tauri::command]
+fn write_debug_log(lines: String) -> Result<String, String> {
+    use std::io::Write;
+    let log_path = std::env::temp_dir().join("monitor-debug.log");
+    let mut file = std::fs::OpenOptions::new()
+        .write(true)
+        .create(true)
+        .truncate(true)
+        .open(&log_path)
+        .map_err(|e| format!("Failed to open log: {}", e))?;
+    file.write_all(lines.as_bytes())
+        .map_err(|e| format!("Failed to write log: {}", e))?;
+    Ok("Log written".to_string())
+}
+
 /// Discover OpenCode instances by finding opencode processes and their listening ports.
 #[tauri::command]
 fn discover_opencode_ports() -> Vec<u32> {
@@ -253,7 +269,8 @@ pub fn run() {
             restart_zed_and_monitor,
             set_env_var,
             get_env_var,
-            delete_env_var
+            delete_env_var,
+            write_debug_log
         ])
         .setup(|app| {
             // Open devtools automatically in debug builds for diagnostics
