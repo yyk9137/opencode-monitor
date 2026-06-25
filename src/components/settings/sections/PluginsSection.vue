@@ -34,59 +34,85 @@ interface PluginConfigFile {
 const pluginConfigFiles = ref<PluginConfigFile[]>([])
 const configLoading = ref(false)
 
-// Map plugin names to their config file names
-const PLUGIN_CONFIG_MAP: Record<string, string> = {
-  'oh-my-opencode-slim': 'oh-my-opencode-slim.json',
-  '@cortexkit/aft-opencode': 'aft.jsonc',
-  '@cortexkit/aft-opencode@latest': 'aft.jsonc',
-  '@cortexkit/opencode-magic-context': 'magic-context.json',
-  '@cortexkit/opencode-magic-context@latest': 'magic-context.json',
+// Map plugin names to their config file locations
+// Each entry: [configDir, fileName]
+// configDir is relative to home: '.config/opencode' or '.config/cortexkit'
+interface PluginConfigEntry {
+  dir: string  // relative to home dir
+  file: string
+}
+
+const PLUGIN_CONFIG_MAP: Record<string, PluginConfigEntry[]> = {
+  'oh-my-opencode-slim': [{ dir: '.config/opencode', file: 'oh-my-opencode-slim.json' }],
+  '@cortexkit/aft-opencode': [{ dir: '.config/opencode', file: 'aft.jsonc' }],
+  '@cortexkit/aft-opencode@latest': [{ dir: '.config/opencode', file: 'aft.jsonc' }],
+  '@cortexkit/opencode-magic-context': [{ dir: '.config/cortexkit', file: 'magic-context.jsonc' }],
+  '@cortexkit/opencode-magic-context@latest': [{ dir: '.config/cortexkit', file: 'magic-context.jsonc' }],
+}
+
+// Also load tui.json (TUI plugin list)
+const TUI_CONFIG: PluginConfigEntry = { dir: '.config/opencode', file: 'tui.json' }
+
+function stripJsonComments(text: string): string {
+  return text.replace(/\/\/.*$/gm, '').replace(/\/\*[\s\S]*?\*\//g, '').trim()
+}
+
+async function tryReadConfigFile(home: string, entry: PluginConfigEntry): Promise<PluginConfigFile | null> {
+  const filePath = await join(home, entry.dir, entry.file)
+  const fileExists = await exists(filePath)
+  let content: unknown = null
+  let raw = ''
+
+  if (fileExists) {
+    try {
+      raw = await readTextFile(filePath)
+      content = JSON.parse(stripJsonComments(raw))
+    } catch { /* parse error */ }
+  }
+
+  return {
+    pluginName: '',
+    fileName: entry.file,
+    path: filePath,
+    content,
+    raw,
+    exists: fileExists,
+  }
 }
 
 async function loadPluginConfigs() {
   configLoading.value = true
   try {
     const home = await homeDir()
-    const configDir = await join(home, '.config', 'opencode')
     const results: PluginConfigFile[] = []
 
+    // Load tui.json first
+    const tuiFile = await tryReadConfigFile(home, TUI_CONFIG)
+    if (tuiFile) {
+      tuiFile.pluginName = '(TUI config)'
+      results.push(tuiFile)
+    }
+
+    // Load per-plugin config files
     for (const plugin of plugins.value) {
       const name = typeof plugin === 'string' ? plugin : plugin[0]
-      // Find matching config file
-      let configFileName: string | undefined
+      // Find matching config entries
+      let configEntries: PluginConfigEntry[] | undefined
       for (const [key, val] of Object.entries(PLUGIN_CONFIG_MAP)) {
         if (name === key || name.startsWith(key.replace('@latest', ''))) {
-          configFileName = val
+          configEntries = val
           break
         }
       }
-      if (!configFileName) continue
+      if (!configEntries) continue
 
-      const filePath = await join(configDir, configFileName)
-      const fileExists = await exists(filePath)
-      let content: unknown = null
-      let raw = ''
-
-      if (fileExists) {
-        try {
-          raw = await readTextFile(filePath)
-          // Strip JSONC comments
-          const stripped = raw
-            .replace(/\/\/.*$/gm, '')
-            .replace(/\/\*[\s\S]*?\*\//g, '')
-            .trim()
-          content = JSON.parse(stripped)
-        } catch { /* parse error */ }
+      for (const entry of configEntries) {
+        const file = await tryReadConfigFile(home, entry)
+        if (file) {
+          file.pluginName = name
+          results.push(file)
+        }
       }
-
-      results.push({
-        pluginName: name,
-        fileName: configFileName,
-        path: filePath,
-        content,
-        raw,
-        exists: fileExists,
-      })
     }
 
     pluginConfigFiles.value = results
@@ -98,17 +124,9 @@ async function loadPluginConfigs() {
 onMounted(loadPluginConfigs)
 watch(() => configStore.draft?.plugin, () => loadPluginConfigs(), { deep: true })
 
-// Track edits to plugin config files (in memory, saved separately)
-const configEdits = ref<Record<string, unknown>>({})
-
-function getConfigContent(pluginName: string): unknown {
-  if (configEdits.value[pluginName] !== undefined) return configEdits.value[pluginName]
-  const file = pluginConfigFiles.value.find(f => f.pluginName === pluginName)
-  return file?.content ?? null
-}
-
-function updateConfigContent(pluginName: string, value: unknown) {
-  configEdits.value[pluginName] = value
+function updateConfigContent(_key: string, _value: unknown) {
+  // TODO: save plugin config files to disk (separate from opencode.jsonc)
+  // For now, edits are in-memory only and lost on panel close
 }
 
 // ── Plugin list CRUD ──────────────────────────────────────────────────────
@@ -235,15 +253,16 @@ function toggleExpand(index: number) {
           <button class="btn-enable-config" @click="enableConfig(i)">+ Add inline config</button>
         </div>
 
-        <!-- Plugin config file (from disk) -->
-        <div v-if="pluginConfigFiles.find(f => f.pluginName === (isTuple(plugin) ? plugin[0] : plugin))" class="config-file-section">
+        <!-- Plugin config files (from disk) -->
+        <div v-for="cf in pluginConfigFiles.filter(f => f.pluginName === (isTuple(plugin) ? plugin[0] : plugin))" :key="cf.path" class="config-file-section">
           <div class="config-toolbar">
-            <label class="form-label">{{ pluginConfigFiles.find(f => f.pluginName === (isTuple(plugin) ? plugin[0] : plugin))?.fileName }}</label>
-            <span class="file-path-hint">{{ pluginConfigFiles.find(f => f.pluginName === (isTuple(plugin) ? plugin[0] : plugin))?.exists ? 'loaded' : 'not found' }}</span>
+            <label class="form-label">{{ cf.fileName }}</label>
+            <span class="file-path-hint" :class="{ 'file-found': cf.exists, 'file-missing': !cf.exists }">{{ cf.exists ? '✓ loaded' : '✗ not found' }}</span>
           </div>
+          <div class="file-path-detail">{{ cf.path }}</div>
           <JsonEditor
-            :model-value="getConfigContent(isTuple(plugin) ? plugin[0] : plugin)"
-            @update:model-value="updateConfigContent(isTuple(plugin) ? plugin[0] : plugin, $event)"
+            :model-value="cf.content"
+            @update:model-value="updateConfigContent(cf.pluginName + ':' + cf.path, $event)"
             @dirty="configStore.dirtyPaths.add('plugin')"
           />
         </div>
@@ -257,6 +276,26 @@ function toggleExpand(index: number) {
     <div v-if="plugins.length === 0" class="empty-state">
       <Package :size="24" />
       <p>No plugins installed.</p>
+    </div>
+
+    <!-- TUI config file (tui.json) -->
+    <div v-if="pluginConfigFiles.find(f => f.pluginName === '(TUI config)')" class="plugin-card">
+      <div class="plugin-header" style="cursor: default">
+        <Package :size="12" class="plugin-type-icon" />
+        <span class="plugin-name">TUI Config (tui.json)</span>
+        <span class="file-path-hint" :class="{ 'file-found': pluginConfigFiles.find(f => f.pluginName === '(TUI config)')?.exists, 'file-missing': !pluginConfigFiles.find(f => f.pluginName === '(TUI config)')?.exists }">{{ pluginConfigFiles.find(f => f.pluginName === '(TUI config)')?.exists ? '✓ loaded' : '✗ not found' }}</span>
+      </div>
+      <div class="plugin-body">
+        <div class="form-row">
+          <label class="form-label">tui.json</label>
+          <div class="file-path-detail">{{ pluginConfigFiles.find(f => f.pluginName === '(TUI config)')?.path }}</div>
+          <JsonEditor
+            :model-value="pluginConfigFiles.find(f => f.pluginName === '(TUI config)')?.content"
+            @update:model-value="updateConfigContent('tui-config', $event)"
+            @dirty="configStore.dirtyPaths.add('plugin')"
+          />
+        </div>
+      </div>
     </div>
 
     <!-- Add plugin form -->
@@ -316,6 +355,9 @@ function toggleExpand(index: number) {
 .no-config-hint { font-size: var(--font-size-small); color: var(--text-placeholder); }
 .btn-enable-config { background: transparent; border: none; color: var(--text-accent); cursor: pointer; font-size: var(--font-size-small); text-decoration: underline; }
 .config-file-section { padding-top: var(--space-8); border-top: 1px solid var(--border-variant); display: flex; flex-direction: column; gap: var(--space-6); }
+.file-path-detail { font-family: var(--font-mono); font-size: 9px; color: var(--text-placeholder); word-break: break-all; }
+.file-found { color: var(--success); }
+.file-missing { color: var(--error); }
 .file-path-hint { font-size: var(--font-size-small); color: var(--text-placeholder); }
 .card-actions { display: flex; justify-content: flex-end; }
 .btn-delete { display: inline-flex; align-items: center; gap: 4px; padding: 4px var(--space-8); background: transparent; border: 1px solid var(--error); border-radius: var(--radius-xs); color: var(--error); cursor: pointer; font-size: var(--font-size-small); }
