@@ -54,13 +54,13 @@ const dialogBody = computed(() => {
   if (r?.kind === 'switch-instance') {
     return [`您有 ${count} 个未保存的更改。`, '保存并切换到新实例，或放弃更改。']
   }
-  return [`您有 ${count} 个未保存的更改。`, '保存并重启 OpenCode，或放弃更改。']
+  return [`您有 ${count} 个未保存的更改。`, '保存配置文件，或放弃更改。重启 OpenCode 后生效。']
 })
 
 const dialogSaveLabel = computed(() => {
   const r = configStore.pendingDismiss
   if (r?.kind === 'switch-instance') return '保存并切换'
-  return '保存并重启'
+  return '保存配置'
 })
 
 function handleDialogCancel() {
@@ -178,7 +178,7 @@ function handleKeydown(e: KeyboardEvent) {
             @click="handleSave"
           >
             <Loader2 v-if="configStore.phase !== 'idle'" :size="12" class="animate-spin" />
-            保存并重启
+            保存配置
           </button>
         </div>
       </div>

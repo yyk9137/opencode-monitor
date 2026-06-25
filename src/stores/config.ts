@@ -143,7 +143,9 @@ export const useConfigStore = defineStore('config', () => {
     }
   }
 
-  // ── Save config: field-level merge into existing opencode.jsonc ─────────
+  // ── Save config: write to opencode.jsonc, do NOT auto-restart ──────────
+  // Restart is left to the user — auto-restart would break Zed ACP connection
+  // and Monitor's SSE event stream.
   async function saveConfig(): Promise<boolean> {
     if (phase.value !== 'idle') return false
     if (!original.value || !draft.value) return false
@@ -167,7 +169,6 @@ export const useConfigStore = defineStore('config', () => {
       }
 
       // Determine which top-level sections were changed
-      // For each dirty path, extract the top-level key
       const dirtySections = new Set<string>()
       for (const path of dirtyPaths.value) {
         const topKey = path.split('.')[0]
@@ -179,10 +180,8 @@ export const useConfigStore = defineStore('config', () => {
 
       for (const section of dirtySections) {
         if (section in draftPlain) {
-          // Replace this section entirely with draft's version
           existingConfig[section] = draftPlain[section]
         } else {
-          // Section was deleted from draft — remove from existing
           delete existingConfig[section]
         }
       }
@@ -191,43 +190,10 @@ export const useConfigStore = defineStore('config', () => {
       const jsonStr = JSON.stringify(existingConfig, null, 2)
       await writeTextFile(configPath, jsonStr)
 
-      // Update original to match what we just wrote (re-read via API after restart)
-      // For now, update original with the merged result
+      // Update original to match what we just wrote
       original.value = cloneDeep(draft.value)
       dirtyPaths.value = new Set()
-
-      // Restart the OpenCode instance
-      phase.value = 'restarting'
-      restartStartTime.value = Date.now()
-      restartDetected.value = false
-      restartConfirmed.value = false
-      restartElapsed.value = 0
-
-      progressTimer = setInterval(() => {
-        restartElapsed.value = Date.now() - restartStartTime.value
-      }, 100)
-
-      timeoutId = setTimeout(() => {
-        if (phase.value === 'restarting') phase.value = 'timeout'
-      }, 90_000)
-
-      absoluteTimeoutId = setTimeout(() => {
-        stopDetection()
-        if (phase.value === 'restarting' || phase.value === 'timeout') {
-          phase.value = 'timeout'
-        }
-      }, 300_000)
-
-      // Dispose the instance via API to trigger restart
-      if (targetUrl.value) {
-        try {
-          await fetch(targetUrl.value + '/instance', { method: 'DELETE' })
-        } catch {
-          // Instance may not support DELETE — that's ok
-        }
-      }
-
-      startHealthPolling()
+      phase.value = 'idle'
       return true
     } catch (e) {
       phase.value = 'idle'
