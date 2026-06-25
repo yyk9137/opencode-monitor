@@ -173,30 +173,23 @@ fn find_zed_path() -> Option<String> {
 /// 4. Monitor and Zed both restart with fresh state
 #[tauri::command]
 fn restart_zed_and_monitor() -> Result<String, String> {
-    let monitor_path = std::env::current_exe()
-        .map_err(|e| format!("Failed to get current exe path: {}", e))?
-        .to_string_lossy()
-        .to_string();
-
     let zed_path = find_zed_path()
         .ok_or_else(|| "Could not find Zed executable. Please restart Zed manually.".to_string())?;
 
     let temp_dir = std::env::temp_dir();
     let script_path = temp_dir.join("restart-monitor.bat");
 
-    // Build the batch script
+    // Build the batch script (only restarts Zed, not Monitor —
+    // Monitor should be started via Zed task Ctrl+Shift+M to inherit cwd)
     let script = format!(
         r#"@echo off
 timeout /t 2 /nobreak >nul
 taskkill /F /IM Zed.exe >nul 2>&1
 timeout /t 1 /nobreak >nul
 start "" "{zed_path}"
-timeout /t 1 /nobreak >nul
-start "" "{monitor_path}"
 del "%~f0"
 "#,
         zed_path = zed_path,
-        monitor_path = monitor_path,
     );
 
     // Write the script
@@ -214,8 +207,8 @@ del "%~f0"
         .map_err(|e| format!("Failed to launch restart script: {}", e))?;
 
     Ok(format!(
-        "Restart sequence initiated. Zed: {}, Monitor: {}",
-        zed_path, monitor_path
+        "Restart sequence initiated. Zed: {}",
+        zed_path
     ))
 }
 
