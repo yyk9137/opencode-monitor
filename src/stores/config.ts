@@ -226,11 +226,11 @@ export const useConfigStore = defineStore('config', () => {
           try {
             const ports = await invoke<number[]>('discover_opencode_ports')
             if (ports.length > 0) {
-              targetUrl.value = 'http://localhost:' + ports[0]
+              targetUrl.value = 'http://127.0.0.1:' + ports[0]
             }
           } catch {
             // Discovery failed — fall back to default port
-            targetUrl.value = 'http://localhost:4096'
+            targetUrl.value = 'http://127.0.0.1:4096'
           }
         }
         let apiConfig: OpenCodeConfig | null = null

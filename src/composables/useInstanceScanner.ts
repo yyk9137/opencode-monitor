@@ -83,7 +83,7 @@ export function useInstanceScanner(): UseInstanceScannerReturn {
       // Step 2: Probe each port for OpenCode health endpoint
       const probes = await Promise.all(
         portsToScan.map(async (port): Promise<DiscoveredInstance | null> => {
-          const url = `http://localhost:${port}`
+          const url = `http://127.0.0.1:${port}`
           const health = await probe(url, HEALTH_TIMEOUT_MS)
           if (!health) return null
           const projectDir = await probeProjectDir(url, PROJECT_TIMEOUT_MS)
