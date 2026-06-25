@@ -516,15 +516,11 @@ export const useConfigStore = defineStore('config', () => {
       dirtyPaths.value = new Set()
       phase.value = 'idle'
 
-      // Restart Zed + Monitor via detached batch script
-      try {
-        await invoke('restart_zed_and_monitor')
-      } catch (e) {
-        lastError.value = {
-          at: Date.now(),
-          phase: 'saving',
-          message: '配置已保存，但重启失败: ' + String(e) + '。请手动重启 Zed。',
-        }
+      // Config saved successfully — prompt user to restart Zed manually
+      lastError.value = {
+        at: Date.now(),
+        phase: 'idle',
+        message: '配置已保存，请手动重启 Zed 使配置生效。',
       }
 
       return true

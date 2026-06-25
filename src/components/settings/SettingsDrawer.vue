@@ -76,7 +76,7 @@ const dialogBody = computed(() => {
 const dialogSaveLabel = computed(() => {
   const r = configStore.pendingDismiss
   if (r?.kind === 'switch-instance') return '保存并切换'
-  return '保存并重启 Zed'
+  return '保存配置'
 })
 
 function handleDialogCancel() {
@@ -212,7 +212,7 @@ function handleKeydown(e: KeyboardEvent) {
             @click="handleSave"
           >
             <Loader2 v-if="configStore.phase !== 'idle'" :size="12" class="animate-spin" />
-            保存并重启 Zed
+            保存配置
           </button>
         </div>
       </div>
