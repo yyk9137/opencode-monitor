@@ -297,7 +297,7 @@ const newModelId = ref<Record<string, string>>({})
               :value="apiKeyInputs[id] ?? ''"
               class="form-input"
               :placeholder="getApiKeyPlaceholder(id)"
-              @input="onApiKeyInput(id, ($event.target as HTMLInputElement).value)"
+              @change="onApiKeyInput(id, ($event.target as HTMLInputElement).value)"
             />
             <span v-if="isEnvRef(id)" class="env-badge">env</span>
           </div>
