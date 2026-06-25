@@ -70,6 +70,21 @@ function onApiKeyInput(id: string, value: string) {
   // This prevents accidental deletion of saved keys when editing other fields
 }
 
+/** Check if the existing apiKey for a provider uses {env:VAR_NAME} format */
+function isEnvRef(id: string): boolean {
+  const existing = configStore.draft?.provider?.[id]?.options?.apiKey
+  return typeof existing === 'string' && existing.startsWith('{env:')
+}
+
+/** Get a display-friendly placeholder for the apiKey field */
+function getApiKeyPlaceholder(id: string): string {
+  const existing = configStore.draft?.provider?.[id]?.options?.apiKey
+  if (typeof existing === 'string' && existing.startsWith('{env:')) {
+    return existing.slice(5, -1) // e.g. {env:MIMO_API_KEY} → MIMO_API_KEY
+  }
+  return 'Enter key to update (saved value hidden)'
+}
+
 // ── Add provider flow ────────────────────────────────────────────────────
 function startAddProvider() {
   showAddForm.value = true
@@ -104,7 +119,8 @@ function confirmAddProvider() {
   if (!configStore.draft.provider) configStore.draft.provider = {}
   if (configStore.draft.provider[id]) { expanded.value = id; showAddForm.value = false; return }
 
-  configStore.draft.provider[id] = { name, api, options: {} }
+  const defaultApiKey = `{env:${id.toUpperCase().replace(/-/g, '_')}_API_KEY}`
+  configStore.draft.provider[id] = { name, api, options: { apiKey: defaultApiKey } }
   configStore.dirtyPaths.add('provider.' + id)
   showAddForm.value = false
   expanded.value = id
@@ -252,13 +268,17 @@ const newModelId = ref<Record<string, string>>({})
         <!-- API Key — write-only -->
         <div class="form-row">
           <label class="form-label">API Key</label>
-          <input
-            type="password"
-            :value="apiKeyInputs[id] ?? ''"
-            class="form-input"
-            placeholder="Enter key to update (saved value hidden)"
-            @input="onApiKeyInput(id, ($event.target as HTMLInputElement).value)"
-          />
+          <div class="api-key-input-row">
+            <input
+              type="password"
+              :value="apiKeyInputs[id] ?? ''"
+              class="form-input"
+              :placeholder="getApiKeyPlaceholder(id)"
+              @input="onApiKeyInput(id, ($event.target as HTMLInputElement).value)"
+            />
+            <span v-if="isEnvRef(id)" class="env-badge">env</span>
+          </div>
+          <span class="form-helper">可输入明文密钥或 {env:VAR_NAME} 格式的环境变量引用</span>
         </div>
 
         <!-- Base URL -->
@@ -393,6 +413,10 @@ const newModelId = ref<Record<string, string>>({})
 .form-input { width: 100%; padding: 4px var(--space-8); height: 28px; background: var(--bg-element); border: 1px solid var(--border-variant); border-radius: var(--radius-xs); color: var(--text-primary); font-family: var(--font-ui); font-size: var(--font-size-ui); outline: none; }
 .form-input:focus { background: var(--bg-editor); box-shadow: 0 0 0 1px var(--border-focused); }
 .form-input:disabled { opacity: 0.4; }
+.api-key-input-row { display: flex; align-items: center; gap: var(--space-6); }
+.api-key-input-row .form-input { flex: 1; }
+.env-badge { font-family: var(--font-mono); font-size: 9px; padding: 1px 5px; border-radius: var(--radius-xs); background: var(--bg-element); color: var(--text-accent); border: 1px solid var(--border-variant); white-space: nowrap; }
+.form-helper { font-size: var(--font-size-small); color: var(--text-muted); line-height: 1.4; }
 .number-false-row { display: flex; align-items: center; gap: var(--space-8); }
 .number-false-row .form-input { flex: 1; }
 .checkbox-label { display: flex; align-items: center; gap: 4px; font-size: var(--font-size-small); color: var(--text-muted); cursor: pointer; white-space: nowrap; }
