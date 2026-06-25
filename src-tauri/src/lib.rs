@@ -204,12 +204,17 @@ del "%~f0"
         .map_err(|e| format!("Failed to write restart script: {}", e))?;
 
     // Launch the script as a completely detached process
-    // cmd /c start "" /MIN <script> — "" is the window title (required by start)
+    // Use Windows CREATE_NEW_PROCESS_GROUP | DETACHED_PROCESS flags
+    // to ensure the script survives when Zed (parent of Monitor) is killed
+    use std::os::windows::process::CommandExt;
+    const CREATE_NEW_PROCESS_GROUP: u32 = 0x00000200;
+    const DETACHED_PROCESS: u32 = 0x00000008;
     Command::new("cmd")
         .args(["/c", "start", "", "/MIN", &script_path.to_string_lossy()])
         .stdin(std::process::Stdio::null())
         .stdout(std::process::Stdio::null())
         .stderr(std::process::Stdio::null())
+        .creation_flags(CREATE_NEW_PROCESS_GROUP | DETACHED_PROCESS)
         .spawn()
         .map_err(|e| format!("Failed to launch restart script: {}", e))?;
 
