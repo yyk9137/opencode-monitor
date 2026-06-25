@@ -149,14 +149,23 @@ function confirmAddProvider() {
   expanded.value = id
 }
 
-function softDeleteProvider(id: string) {
+async function softDeleteProvider(id: string) {
   if (!configStore.draft?.provider) return
+  // Check if apiKey uses env var format and extract var name for cleanup
+  const apiKey = configStore.draft.provider[id]?.options?.apiKey
+  if (typeof apiKey === 'string' && apiKey.startsWith('{env:') && apiKey.endsWith('}')) {
+    const varName = apiKey.slice(5, -1)
+    // Delete the env var from registry (best-effort, don't block on failure)
+    try {
+      await invoke('delete_env_var', { name: varName })
+    } catch {
+      // Ignore — env var may not exist or deletion failed
+    }
+  }
   // Delete from draft (UI removes the card immediately)
   delete configStore.draft.provider[id]
   configStore.dirtyPaths.add('provider.' + id)
   if (expanded.value === id) expanded.value = null
-  // Note: server-side mergeDeep may restore the key from existing config.
-  // True deletion may require manual edit of config.json.
 }
 
 // ── Model management (inside provider edit form) ─────────────────────────

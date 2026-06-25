@@ -232,12 +232,11 @@ export const useConfigStore = defineStore('config', () => {
       dirtyPaths.value = new Set()
       phase.value = 'idle'
 
-      // Restart OpenCode: kill process + trigger Zed auto-reconnect
-      // Zed detects process exit (LoadError) + settings change → auto-reconnect
+      // Restart Zed to reload OpenCode with new config
       try {
-        await invoke('restart_opencode')
+        await invoke('restart_zed')
       } catch (e) {
-        lastError.value = { at: Date.now(), phase: 'saving', message: '配置已保存，但 OpenCode 重启失败: ' + String(e) + '。请手动重启 OpenCode。' }
+        lastError.value = { at: Date.now(), phase: 'saving', message: '配置已保存，但 Zed 重启失败: ' + String(e) + '。请手动重启 Zed。' }
       }
 
       return true
