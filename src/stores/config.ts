@@ -4,6 +4,7 @@ import { fetch } from '@tauri-apps/plugin-http'
 import { readTextFile, writeTextFile, exists } from '@tauri-apps/plugin-fs'
 import { invoke } from '@tauri-apps/api/core'
 import { homeDir, join } from '@tauri-apps/api/path'
+import { modify as modifyJsonc, applyEdits as applyJsoncEdits } from 'jsonc-parser'
 import type { OpenCodeConfig } from '@/types/opencode-config'
 
 // ── Dismiss reason union (shared with ConfirmDialog) ──────────────────────
@@ -51,28 +52,52 @@ async function getConfigPath(): Promise<string> {
   return _configPath
 }
 
-// ── Strip JSONC comments (// and /* */) for parsing ──────────────────────
-function stripJsonComments(text: string): string {
-  let result = ''
-  let inString = false
-  let escaped = false
-  let i = 0
-  while (i < text.length) {
-    const char = text[i]
-    const next = text[i + 1]
-    if (inString) {
-      result += char
-      if (escaped) { escaped = false } else if (char === '\\') { escaped = true } else if (char === '"') { inString = false }
-      i++
-      continue
+// stripJsonComments removed — jsonc-parser handles JSONC parsing natively now
+
+// ── Deep diff: find leaf-level changes between original and draft ──────────
+// Only paths where original !== draft are returned. This captures user edits
+// while ignoring API-resolved values (e.g., {env:VAR} resolved to plaintext).
+interface DiffEntry {
+  path: (string | number)[]
+  value: unknown
+  type: 'add' | 'update' | 'delete'
+}
+
+function deepDiff(original: unknown, draft: unknown, basePath: (string | number)[] = []): DiffEntry[] {
+  const diffs: DiffEntry[] = []
+
+  // Deleted: original has value, draft is undefined
+  if (draft === undefined) {
+    if (original !== undefined) {
+      diffs.push({ path: basePath, value: undefined, type: 'delete' })
     }
-    if (char === '"') { inString = true; result += char; i++; continue }
-    if (char === '/' && next === '/') { while (i < text.length && text[i] !== '\n') i++; continue }
-    if (char === '/' && next === '*') { i += 2; while (i < text.length && !(text[i] === '*' && text[i + 1] === '/')) i++; i += 2; continue }
-    result += char
-    i++
+    return diffs
   }
-  return result
+
+  // Added: original is undefined, draft has value
+  if (original === undefined) {
+    diffs.push({ path: basePath, value: draft, type: 'add' })
+    return diffs
+  }
+
+  // Both are non-null objects (but not arrays) → recurse
+  if (
+    typeof original === 'object' && original !== null && !Array.isArray(original) &&
+    typeof draft === 'object' && draft !== null && !Array.isArray(draft)
+  ) {
+    const allKeys = new Set([...Object.keys(original), ...Object.keys(draft)])
+    for (const key of allKeys) {
+      diffs.push(...deepDiff((original as Record<string, unknown>)[key], (draft as Record<string, unknown>)[key], [...basePath, key]))
+    }
+    return diffs
+  }
+
+  // Arrays or scalars → compare by value
+  if (JSON.stringify(original) !== JSON.stringify(draft)) {
+    diffs.push({ path: basePath, value: draft, type: 'update' })
+  }
+
+  return diffs
 }
 
 // ── Config file path resolution (for writing) ───────────────────────────
@@ -144,9 +169,14 @@ export const useConfigStore = defineStore('config', () => {
     }
   }
 
-  // ── Save config: write to opencode.jsonc, then restart Zed ─────────────
-  // Restart is left to the user — auto-restart would break Zed ACP connection
-  // and Monitor's SSE event stream.
+  // ── Save config: field-level merge to opencode.jsonc, preserving comments ─
+  // 1. Read raw opencode.jsonc text from disk (preserves {env:VAR} and comments)
+  // 2. Compute diff between original (API baseline) and draft (user edits)
+  //    → only leaf-level user changes are captured
+  // 3. Apply each diff to raw text via jsonc-parser.modify()
+  //    → preserves comments, formatting, and unedited fields
+  // 4. Write back (UTF-8 without BOM)
+  // 5. Restart Zed
   async function saveConfig(): Promise<boolean> {
     if (phase.value !== 'idle') return false
     if (!original.value || !draft.value) return false
@@ -157,44 +187,43 @@ export const useConfigStore = defineStore('config', () => {
     try {
       const configPath = await getConfigPath()
 
-      // Read existing config from disk
-      let existingConfig: Record<string, unknown> = {}
+      // 1. Read raw text from disk (preserves comments + {env:VAR} format)
+      let rawText = ''
       if (await exists(configPath)) {
+        rawText = await readTextFile(configPath)
+      } else {
+        rawText = '{}'
+      }
+
+      // 2. Compute actual user changes (original from API vs draft with user edits)
+      const o = cloneDeep(original.value) as Record<string, unknown>
+      const d = cloneDeep(draft.value) as Record<string, unknown>
+      const diffs = deepDiff(o, d)
+
+      console.log(`[saveConfig] ${diffs.length} field-level changes detected`)
+
+      // 3. Apply each diff to raw text via jsonc-parser.modify()
+      //    This preserves comments, formatting, and unedited {env:VAR} values
+      const formattingOptions = { tabSize: 2, insertSpaces: true, eol: '\n' } as const
+      let modifiedText = rawText
+      let applied = 0
+      for (const diff of diffs) {
         try {
-          const raw = await readTextFile(configPath)
-          const stripped = stripJsonComments(raw)
-          existingConfig = JSON.parse(stripped)
+          const edits = modifyJsonc(modifiedText, diff.path, diff.value, { formattingOptions })
+          modifiedText = applyJsoncEdits(modifiedText, edits)
+          applied++
         } catch {
-          existingConfig = {}
+          // jsonc-parser.modify may fail for complex paths — skip and continue
         }
       }
+      console.log(`[saveConfig] applied ${applied}/${diffs.length} changes`)
 
-      // Determine which top-level sections were changed
-      const dirtySections = new Set<string>()
-      for (const path of dirtyPaths.value) {
-        const topKey = path.split('.')[0]
-        if (topKey) dirtySections.add(topKey)
-      }
-
-      // Merge only changed sections from draft into existing config
-      const draftPlain = cloneDeep(draft.value) as Record<string, unknown>
-
-      for (const section of dirtySections) {
-        if (section in draftPlain) {
-          existingConfig[section] = draftPlain[section]
-        } else {
-          delete existingConfig[section]
-        }
-      }
-
-      // Write back (UTF-8 without BOM — Tauri's writeTextFile uses Rust std::fs::write)
-      const jsonStr = JSON.stringify(existingConfig, null, 2)
-      await writeTextFile(configPath, jsonStr)
+      // 4. Write back (Tauri's writeTextFile uses Rust std::fs::write → UTF-8 without BOM)
+      await writeTextFile(configPath, modifiedText)
 
       // Verify no BOM was written (safety check)
       const verifyRaw = await readTextFile(configPath)
       if (verifyRaw.charCodeAt(0) === 0xFEFF) {
-        // BOM detected — rewrite without BOM
         await writeTextFile(configPath, verifyRaw.slice(1))
       }
 
@@ -203,7 +232,7 @@ export const useConfigStore = defineStore('config', () => {
       dirtyPaths.value = new Set()
       phase.value = 'idle'
 
-      // Auto-restart Zed (OpenCode will restart with new config)
+      // 5. Auto-restart Zed (OpenCode will restart with new config)
       // Monitor is a separate process and survives the restart
       try {
         await invoke('restart_zed')
