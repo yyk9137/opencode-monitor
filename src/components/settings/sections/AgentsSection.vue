@@ -61,6 +61,41 @@ function updateAgent(name: string, field: string, value: unknown) {
   configStore.dirtyPaths.add(`agent.${name}.${field}`)
 }
 
+/** Read reasoningEffort from options (fallback to legacy variant field) */
+function getReasoningEffort(config: Record<string, unknown>): string {
+  const options = config.options as Record<string, unknown> | undefined
+  if (options?.reasoningEffort && typeof options.reasoningEffort === 'string') {
+    return options.reasoningEffort
+  }
+  // Fallback to legacy variant field (for agents still using it)
+  if (config.variant && typeof config.variant === 'string') {
+    return config.variant === 'thinking' ? 'medium' : config.variant
+  }
+  return ''
+}
+
+/** Write reasoningEffort to options, remove legacy variant field */
+function setReasoningEffort(name: string, value: string) {
+  if (!configStore.draft?.agent?.[name]) return
+  const agent = configStore.draft.agent[name] as Record<string, unknown>
+  // Remove legacy variant field
+  if ('variant' in agent) {
+    delete agent.variant
+    configStore.dirtyPaths.add(`agent.${name}.variant`)
+  }
+  // Set options.reasoningEffort
+  if (!agent.options || typeof agent.options !== 'object') {
+    agent.options = {}
+  }
+  const opts = agent.options as Record<string, unknown>
+  if (value) {
+    opts.reasoningEffort = value
+  } else {
+    delete opts.reasoningEffort
+  }
+  configStore.dirtyPaths.add(`agent.${name}.options`)
+}
+
 function addAgent() {
   const name = newAgentName.value.trim()
   if (!name || !configStore.draft) return
@@ -181,14 +216,13 @@ function commitPerm(name: string) {
             <div class="form-row"><label class="form-label">Top P</label><input :value="config.top_p ?? ''" type="number" step="0.01" min="0" max="1" class="form-input" @input="updateAgent(name, 'top_p', Number(($event.target as HTMLInputElement).value) || undefined)" /></div>
             <div class="form-row"><label class="form-label">Steps</label><input :value="config.steps ?? ''" type="number" min="1" class="form-input" @input="updateAgent(name, 'steps', Number(($event.target as HTMLInputElement).value) || undefined)" /></div>
           </div>
-          <div class="form-row"><label class="form-label">Thinking Variant</label>
-            <select :value="config.variant ?? ''" class="form-input" @change="updateAgent(name, 'variant', ($event.target as HTMLSelectElement).value || undefined)">
+          <div class="form-row"><label class="form-label">Reasoning Effort</label>
+            <select :value="getReasoningEffort(config)" class="form-input" @change="setReasoningEffort(name, ($event.target as HTMLSelectElement).value || '')">
               <option value="">Inherit</option>
               <option value="low">Low</option>
               <option value="medium">Medium</option>
               <option value="high">High</option>
               <option value="max">Max</option>
-              <option value="thinking">Thinking</option>
             </select>
           </div>
           <div class="form-row"><label class="form-label">Color</label><input :value="config.color ?? ''" type="text" class="form-input" placeholder="#RRGGBB or theme name" @input="updateAgent(name, 'color', ($event.target as HTMLInputElement).value || undefined)" /></div>
@@ -245,14 +279,13 @@ function commitPerm(name: string) {
             <div class="form-row"><label class="form-label">Top P</label><input :value="config.top_p ?? ''" type="number" step="0.01" min="0" max="1" class="form-input" @input="updateAgent(name, 'top_p', Number(($event.target as HTMLInputElement).value) || undefined)" /></div>
             <div class="form-row"><label class="form-label">Steps</label><input :value="config.steps ?? ''" type="number" min="1" class="form-input" @input="updateAgent(name, 'steps', Number(($event.target as HTMLInputElement).value) || undefined)" /></div>
           </div>
-          <div class="form-row"><label class="form-label">Thinking Variant</label>
-            <select :value="config.variant ?? ''" class="form-input" @change="updateAgent(name, 'variant', ($event.target as HTMLSelectElement).value || undefined)">
+          <div class="form-row"><label class="form-label">Reasoning Effort</label>
+            <select :value="getReasoningEffort(config)" class="form-input" @change="setReasoningEffort(name, ($event.target as HTMLSelectElement).value || '')">
               <option value="">Inherit</option>
               <option value="low">Low</option>
               <option value="medium">Medium</option>
               <option value="high">High</option>
               <option value="max">Max</option>
-              <option value="thinking">Thinking</option>
             </select>
           </div>
           <div class="form-row"><label class="form-label">Color</label><input :value="config.color ?? ''" type="text" class="form-input" placeholder="#RRGGBB or theme name" @input="updateAgent(name, 'color', ($event.target as HTMLInputElement).value || undefined)" /></div>
