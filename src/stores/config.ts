@@ -202,23 +202,6 @@ export const useConfigStore = defineStore('config', () => {
 
       console.log(`[saveConfig] ${diffs.length} field-level changes detected`)
 
-      // Clean up env vars for deleted providers
-      // Check if any provider was deleted: in original but not in draft
-      const origProviders = (o.provider ?? {}) as Record<string, unknown>
-      const draftProviders = (d.provider ?? {}) as Record<string, unknown>
-      for (const providerId of Object.keys(origProviders)) {
-        if (!(providerId in draftProviders)) {
-          // Provider was deleted — compute env var name from provider ID
-          const varName = providerId.toUpperCase().replace(/[^A-Z0-9]/g, '_') + '_API_KEY'
-          try {
-            await invoke('delete_env_var', { name: varName })
-            console.log(`[saveConfig] deleted env var ${varName} for removed provider ${providerId}`)
-          } catch {
-            // Best-effort — don't block save on env var cleanup failure
-          }
-        }
-      }
-
       // 3. Apply each diff to raw text via jsonc-parser.modify()
       //    This preserves comments, formatting, and unedited {env:VAR} values
       const formattingOptions = { tabSize: 2, insertSpaces: true, eol: '\n' } as const
