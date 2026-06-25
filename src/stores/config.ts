@@ -232,11 +232,12 @@ export const useConfigStore = defineStore('config', () => {
       dirtyPaths.value = new Set()
       phase.value = 'idle'
 
-      // Restart Zed to reload OpenCode with new config
+      // Restart Zed + Monitor via detached batch script
+      // Script survives the Zed kill because it runs as a separate process
       try {
-        await invoke('restart_zed')
+        await invoke('restart_zed_and_monitor')
       } catch (e) {
-        lastError.value = { at: Date.now(), phase: 'saving', message: '配置已保存，但 Zed 重启失败: ' + String(e) + '。请手动重启 Zed。' }
+        lastError.value = { at: Date.now(), phase: 'saving', message: '配置已保存，但重启失败: ' + String(e) + '。请手动重启 Zed。' }
       }
 
       return true
