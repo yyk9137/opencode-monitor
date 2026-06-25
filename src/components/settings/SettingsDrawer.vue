@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed } from 'vue'
+import { computed, watch } from 'vue'
 import { ChevronRight, RotateCcw, Loader2, AlertCircle } from 'lucide-vue-next'
 import { useConfigStore } from '@/stores/config'
 import type { ConfigScope } from '@/stores/config'
@@ -41,6 +41,13 @@ async function switchScope(scope: ConfigScope) {
   configStore.draft = null
   await configStore.fetchConfig()
 }
+
+// Fetch config when drawer opens
+watch(() => configStore.panelOpen, async (open) => {
+  if (open && !configStore.draft) {
+    await configStore.fetchConfig()
+  }
+})
 
 async function handleSave() {
   const success = await configStore.saveConfig()
