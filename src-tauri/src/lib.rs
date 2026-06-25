@@ -210,18 +210,29 @@ del "%~f0"
     // Zed uses Windows Job Objects with KILL_ON_JOB_CLOSE — when Zed is killed,
     // all processes in the job (including Monitor and its children) are killed.
     // CREATE_BREAKAWAY_FROM_JOB breaks the new process away from the job.
+    // If BREAKAWAY fails (access denied), fall back to DETACHED_PROCESS only.
     use std::os::windows::process::CommandExt;
     const CREATE_NEW_PROCESS_GROUP: u32 = 0x00000200;
     const DETACHED_PROCESS: u32 = 0x00000008;
     const CREATE_BREAKAWAY_FROM_JOB: u32 = 0x01000000;
-    Command::new("cmd")
+    let launch_result = Command::new("cmd")
         .args(["/c", "start", "", "/MIN", &script_path.to_string_lossy()])
         .stdin(std::process::Stdio::null())
         .stdout(std::process::Stdio::null())
         .stderr(std::process::Stdio::null())
         .creation_flags(CREATE_NEW_PROCESS_GROUP | DETACHED_PROCESS | CREATE_BREAKAWAY_FROM_JOB)
-        .spawn()
-        .map_err(|e| format!("Failed to launch restart script: {}", e))?;
+        .spawn();
+    if launch_result.is_err() {
+        // Retry without BREAKAWAY — may fail with access denied
+        Command::new("cmd")
+            .args(["/c", "start", "", "/MIN", &script_path.to_string_lossy()])
+            .stdin(std::process::Stdio::null())
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .creation_flags(CREATE_NEW_PROCESS_GROUP | DETACHED_PROCESS)
+            .spawn()
+            .map_err(|e| format!("Failed to launch restart script: {}", e))?;
+    }
 
     Ok(format!(
         "Restart sequence initiated. Zed: {}",
