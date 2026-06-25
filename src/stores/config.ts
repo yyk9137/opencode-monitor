@@ -147,6 +147,16 @@ export const useConfigStore = defineStore('config', () => {
   const original = shallowRef<OpenCodeConfig | null>(null)
   const draft = ref<OpenCodeConfig | null>(null)
 
+  // ── Slim config tracking (oh-my-opencode-slim.json) ─────────────────────
+  // Agents defined in slim presets are tracked separately so saveConfig
+  // can route their changes to the correct file.
+  const slimConfigPath = ref<string | null>(null)
+  const slimActivePreset = ref<string>('')
+  // Set of agent IDs that come from slim presets (not from opencode.jsonc)
+  const slimAgentIds = ref<Set<string>>(new Set())
+  // Original slim config text (for comment-preserving modify)
+  const slimOriginalText = ref<string>('')
+
   // ── Operation state ──────────────────────────────────────────────────────
   const phase = ref<ConfigPhase>('idle')
 
@@ -231,6 +241,28 @@ export const useConfigStore = defineStore('config', () => {
 
         // 3. Merge: start with file config, then add agents/MCP from API
         config = fileConfig
+
+        // 3a. Read oh-my-opencode-slim.json to identify slim-managed agents
+        const home = await homeDir()
+        const slimPath = await join(home, '.config', 'opencode', 'oh-my-opencode-slim.json')
+        slimConfigPath.value = slimPath
+        slimAgentIds.value = new Set()
+        slimOriginalText.value = ''
+        if (await exists(slimPath)) {
+          try {
+            const slimRaw = await readTextFile(slimPath)
+            slimOriginalText.value = slimRaw
+            const slim = JSON.parse(slimRaw) as { preset?: string; presets?: Record<string, Record<string, { model?: string; variant?: string; skills?: string[]; mcps?: string[]; options?: Record<string, unknown> }>> }
+            slimActivePreset.value = slim.preset ?? ''
+            const presetAgents = slim.presets?.[slimActivePreset.value] ?? {}
+            for (const agentId of Object.keys(presetAgents)) {
+              slimAgentIds.value.add(agentId)
+            }
+          } catch {
+            // slim config parse failure — skip
+          }
+        }
+
         if (apiConfig) {
           // Merge agents from API (plugin-registered agents like explorer, historian, etc.)
           if (!config.agent) config.agent = {}
@@ -310,10 +342,28 @@ export const useConfigStore = defineStore('config', () => {
 
         console.log(`[saveConfig:global] ${diffs.length} field-level changes detected`)
 
+        // Separate diffs: slim-managed agent changes vs opencode.jsonc changes
+        const slimDiffs: typeof diffs = []
+        const opencodeDiffs: typeof diffs = []
+        for (const diff of diffs) {
+          // Check if this is an agent change that belongs to slim config
+          if (diff.path[0] === 'agent' && diff.path.length >= 2) {
+            const agentId = diff.path[1] as string
+            if (slimAgentIds.value.has(agentId)) {
+              // Route to slim config: agent.xxx → presets.{activePreset}.xxx
+              const slimPath = ['presets', slimActivePreset.value, ...diff.path.slice(1)]
+              slimDiffs.push({ ...diff, path: slimPath })
+              continue
+            }
+          }
+          opencodeDiffs.push(diff)
+        }
+
+        // Apply opencode.jsonc changes
         const formattingOptions = { tabSize: 2, insertSpaces: true, eol: '\n' } as const
         let modifiedText = rawText
         let applied = 0
-        for (const diff of diffs) {
+        for (const diff of opencodeDiffs) {
           try {
             const edits = modifyJsonc(modifiedText, diff.path, diff.value, { formattingOptions })
             modifiedText = applyJsoncEdits(modifiedText, edits)
@@ -330,6 +380,32 @@ export const useConfigStore = defineStore('config', () => {
         const verifyRaw = await readTextFile(configPath)
         if (verifyRaw.charCodeAt(0) === 0xFEFF) {
           await writeTextFile(configPath, verifyRaw.slice(1))
+        }
+
+        // Apply slim config changes (oh-my-opencode-slim.json)
+        if (slimDiffs.length > 0 && slimConfigPath.value) {
+          let slimText = slimOriginalText.value || '{}'
+          let slimApplied = 0
+          for (const diff of slimDiffs) {
+            try {
+              const edits = modifyJsonc(slimText, diff.path, diff.value, { formattingOptions })
+              slimText = applyJsoncEdits(slimText, edits)
+              slimApplied++
+            } catch {
+              // modify may fail for complex paths — skip
+            }
+          }
+          console.log(`[saveConfig:slim] applied ${slimApplied}/${slimDiffs.length} changes to oh-my-opencode-slim.json`)
+          if (slimApplied > 0) {
+            await writeTextFile(slimConfigPath.value, slimText)
+            // Update slim original text for next save
+            slimOriginalText.value = slimText
+            // Verify no BOM
+            const slimVerify = await readTextFile(slimConfigPath.value)
+            if (slimVerify.charCodeAt(0) === 0xFEFF) {
+              await writeTextFile(slimConfigPath.value, slimVerify.slice(1))
+            }
+          }
         }
       } else {
         // ── Project scope: plain JSON ──────────────────────────────────────
