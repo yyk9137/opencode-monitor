@@ -2,7 +2,7 @@
 import { computed } from 'vue'
 import { ChevronRight, RotateCcw, Loader2, AlertCircle } from 'lucide-vue-next'
 import { useConfigStore } from '@/stores/config'
-import InstanceSelector from './InstanceSelector.vue'
+import type { ConfigScope } from '@/stores/config'
 import RestartOverlay from './RestartOverlay.vue'
 import ConfirmDialog from './ConfirmDialog.vue'
 import ProvidersSection from './sections/ProvidersSection.vue'
@@ -31,6 +31,15 @@ function handleClose() {
     configStore.forceDismiss()
     // Focus restore handled by App.vue watch on panelOpen
   }
+}
+
+async function switchScope(scope: ConfigScope) {
+  if (configStore.configScope === scope) return
+  configStore.configScope = scope
+  // Reset state and re-fetch from new scope
+  configStore.original = null
+  configStore.draft = null
+  await configStore.fetchConfig()
 }
 
 async function handleSave() {
@@ -110,9 +119,27 @@ function handleKeydown(e: KeyboardEvent) {
         </button>
       </div>
 
-      <!-- Instance bar -->
-      <div class="drawer-instance-bar" :inert="configStore.pendingDismiss !== null">
-        <InstanceSelector />
+      <!-- Config scope toggle -->
+      <div class="drawer-scope-bar" :inert="configStore.pendingDismiss !== null">
+        <button
+          class="scope-btn"
+          :class="{ active: configStore.configScope === 'global' }"
+          :disabled="configStore.phase !== 'idle'"
+          @click="switchScope('global')"
+        >
+          全局配置
+        </button>
+        <button
+          class="scope-btn"
+          :class="{ active: configStore.configScope === 'project' }"
+          :disabled="configStore.phase !== 'idle'"
+          @click="switchScope('project')"
+        >
+          项目配置
+        </button>
+        <span class="scope-file-hint" :title="configStore.configFilePath">
+          {{ configStore.configFilePath }}
+        </span>
       </div>
 
       <!-- Restart banner -->
@@ -260,10 +287,54 @@ function handleKeydown(e: KeyboardEvent) {
   color: var(--text-primary);
 }
 
-/* ── Instance bar ─────────────────────────────────────────────────────── */
-.drawer-instance-bar {
+/* ── Scope toggle bar ─────────────────────────────────────────────────── */
+.drawer-scope-bar {
+  display: flex;
+  align-items: center;
+  gap: var(--space-4);
+  padding: var(--space-6) var(--space-12);
+  background: var(--bg-app);
+  border-bottom: 1px solid var(--border-variant);
   flex-shrink: 0;
-  min-height: 0;
+}
+
+.scope-btn {
+  padding: 3px var(--space-8);
+  border: 1px solid var(--border-variant);
+  border-radius: var(--radius-xs);
+  background: transparent;
+  color: var(--text-muted);
+  font-family: var(--font-ui);
+  font-size: var(--font-size-small);
+  cursor: pointer;
+  transition: background var(--duration-fast) ease, color var(--duration-fast) ease, border-color var(--duration-fast) ease;
+}
+
+.scope-btn:hover:not(:disabled) {
+  background: var(--bg-hover);
+  color: var(--text-primary);
+}
+
+.scope-btn.active {
+  background: var(--bg-selected);
+  color: var(--text-primary);
+  border-color: var(--text-accent);
+}
+
+.scope-btn:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.scope-file-hint {
+  margin-left: auto;
+  font-family: var(--font-mono);
+  font-size: 9px;
+  color: var(--text-placeholder);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  max-width: 200px;
 }
 
 /* ── Restart banner ───────────────────────────────────────────────────── */

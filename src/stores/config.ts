@@ -4,7 +4,7 @@ import { fetch } from '@tauri-apps/plugin-http'
 import { readTextFile, writeTextFile, exists } from '@tauri-apps/plugin-fs'
 import { invoke } from '@tauri-apps/api/core'
 import { homeDir, join } from '@tauri-apps/api/path'
-import { modify as modifyJsonc, applyEdits as applyJsoncEdits } from 'jsonc-parser'
+import { parse as parseJsonc, modify as modifyJsonc, applyEdits as applyJsoncEdits } from 'jsonc-parser'
 import type { OpenCodeConfig } from '@/types/opencode-config'
 
 // ── Dismiss reason union (shared with ConfirmDialog) ──────────────────────
@@ -100,9 +100,38 @@ function deepDiff(original: unknown, draft: unknown, basePath: (string | number)
   return diffs
 }
 
+// ── Config scope type ─────────────────────────────────────────────────────
+export type ConfigScope = 'global' | 'project'
+
 // ── Config file path resolution (for writing) ───────────────────────────
 
 export const useConfigStore = defineStore('config', () => {
+  // ── Config scope ─────────────────────────────────────────────────────────
+
+  const configScope = ref<ConfigScope>('global')
+  const projectCwd = ref<string | null>(null)
+
+  // Lazily-initialized cache for projectCwd (avoids repeated invoke calls)
+  let _projectCwd: string | null = null
+
+  async function ensureProjectCwd(): Promise<string | null> {
+    if (_projectCwd !== null) return _projectCwd
+    try {
+      const args = await invoke<string[]>('get_cli_args')
+      const cwdIdx = args.indexOf('--cwd')
+      if (cwdIdx !== -1 && args[cwdIdx + 1]) {
+        _projectCwd = args[cwdIdx + 1]
+        projectCwd.value = _projectCwd
+        return _projectCwd
+      }
+    } catch {
+      // CLI args not available — fall through
+    }
+    _projectCwd = null
+    projectCwd.value = null
+    return null
+  }
+
   // ── Config data ──────────────────────────────────────────────────────────
   const original = shallowRef<OpenCodeConfig | null>(null)
   const draft = ref<OpenCodeConfig | null>(null)
@@ -140,23 +169,44 @@ export const useConfigStore = defineStore('config', () => {
     targetUrl.value = url
   }
 
-  // ── Read config via API (merged from all sources) ───────────────────────
+    // ── Read config directly from disk ───────────────────────────────────────
+  // Global scope:  ~/.config/opencode/opencode.jsonc  (JSONC, parsed via jsonc-parser)
+  // Project scope: <cwd>/.opencode/config.json        (plain JSON)
   async function fetchConfig(): Promise<boolean> {
     if (phase.value !== 'idle') return false
     if (pendingSave.value) return false
-    if (!targetUrl.value) return false
 
     phase.value = 'loading'
     lastError.value = null
 
     try {
-      const response = await fetch(targetUrl.value + '/config')
-      if (!response.ok) {
-        phase.value = 'idle'
-        lastError.value = { at: Date.now(), phase: 'loading', message: 'GET /config failed: ' + response.status }
-        return false
+      let config: OpenCodeConfig
+
+      if (configScope.value === 'global') {
+        const configPath = await getConfigPath()
+        let rawText = '{}'
+        if (await exists(configPath)) {
+          rawText = await readTextFile(configPath)
+        }
+        // JSONC — use jsonc-parser.parse() to handle comments
+        const parsed = parseJsonc(rawText)
+        config = (parsed ?? {}) as OpenCodeConfig
+      } else {
+        const cwd = await ensureProjectCwd()
+        if (!cwd) {
+          phase.value = 'idle'
+          lastError.value = { at: Date.now(), phase: 'loading', message: 'No project directory found. Use --cwd CLI arg.' }
+          return false
+        }
+        const configPath = await join(cwd, '.opencode', 'config.json')
+        if (await exists(configPath)) {
+          const rawText = await readTextFile(configPath)
+          config = JSON.parse(rawText) as OpenCodeConfig
+        } else {
+          config = {} as OpenCodeConfig
+        }
       }
-      const config = (await response.json()) as OpenCodeConfig
+
       original.value = config
       draft.value = cloneDeep(config)
       dirtyPaths.value = new Set()
@@ -164,19 +214,14 @@ export const useConfigStore = defineStore('config', () => {
       return true
     } catch (e) {
       phase.value = 'idle'
-      lastError.value = { at: Date.now(), phase: 'loading', message: 'Failed to fetch config: ' + String(e) }
+      lastError.value = { at: Date.now(), phase: 'loading', message: 'Failed to read config: ' + String(e) }
       return false
     }
   }
 
-  // ── Save config: field-level merge to opencode.jsonc, preserving comments ─
-  // 1. Read raw opencode.jsonc text from disk (preserves {env:VAR} and comments)
-  // 2. Compute diff between original (API baseline) and draft (user edits)
-  //    → only leaf-level user changes are captured
-  // 3. Apply each diff to raw text via jsonc-parser.modify()
-  //    → preserves comments, formatting, and unedited fields
-  // 4. Write back (UTF-8 without BOM)
-  // 5. Restart Zed
+  // ── Save config: field-level merge, scope-aware ─────────────────────────
+  // Global scope:  comment-preserving merge using jsonc-parser.modify()
+  // Project scope: plain JSON merge using JSON.stringify()
   async function saveConfig(): Promise<boolean> {
     if (phase.value !== 'idle') return false
     if (!original.value || !draft.value) return false
@@ -185,46 +230,84 @@ export const useConfigStore = defineStore('config', () => {
     lastError.value = null
 
     try {
-      const configPath = await getConfigPath()
-
-      // 1. Read raw text from disk (preserves comments + {env:VAR} format)
-      let rawText = ''
-      if (await exists(configPath)) {
-        rawText = await readTextFile(configPath)
-      } else {
-        rawText = '{}'
-      }
-
-      // 2. Compute actual user changes (original from API vs draft with user edits)
       const o = cloneDeep(original.value) as Record<string, unknown>
       const d = cloneDeep(draft.value) as Record<string, unknown>
       const diffs = deepDiff(o, d)
 
-      console.log(`[saveConfig] ${diffs.length} field-level changes detected`)
+      if (configScope.value === 'global') {
+        // ── Global scope: comment-preserving merge ─────────────────────────
+        const configPath = await getConfigPath()
 
-      // 3. Apply each diff to raw text via jsonc-parser.modify()
-      //    This preserves comments, formatting, and unedited {env:VAR} values
-      const formattingOptions = { tabSize: 2, insertSpaces: true, eol: '\n' } as const
-      let modifiedText = rawText
-      let applied = 0
-      for (const diff of diffs) {
-        try {
-          const edits = modifyJsonc(modifiedText, diff.path, diff.value, { formattingOptions })
-          modifiedText = applyJsoncEdits(modifiedText, edits)
-          applied++
-        } catch {
-          // jsonc-parser.modify may fail for complex paths — skip and continue
+        let rawText = ''
+        if (await exists(configPath)) {
+          rawText = await readTextFile(configPath)
+        } else {
+          rawText = '{}'
         }
-      }
-      console.log(`[saveConfig] applied ${applied}/${diffs.length} changes`)
 
-      // 4. Write back (Tauri's writeTextFile uses Rust std::fs::write → UTF-8 without BOM)
-      await writeTextFile(configPath, modifiedText)
+        console.log(`[saveConfig:global] ${diffs.length} field-level changes detected`)
 
-      // Verify no BOM was written (safety check)
-      const verifyRaw = await readTextFile(configPath)
-      if (verifyRaw.charCodeAt(0) === 0xFEFF) {
-        await writeTextFile(configPath, verifyRaw.slice(1))
+        const formattingOptions = { tabSize: 2, insertSpaces: true, eol: '\n' } as const
+        let modifiedText = rawText
+        let applied = 0
+        for (const diff of diffs) {
+          try {
+            const edits = modifyJsonc(modifiedText, diff.path, diff.value, { formattingOptions })
+            modifiedText = applyJsoncEdits(modifiedText, edits)
+            applied++
+          } catch {
+            // jsonc-parser.modify may fail for complex paths — skip and continue
+          }
+        }
+        console.log(`[saveConfig:global] applied ${applied}/${diffs.length} changes`)
+
+        await writeTextFile(configPath, modifiedText)
+
+        // Verify no BOM was written (safety check)
+        const verifyRaw = await readTextFile(configPath)
+        if (verifyRaw.charCodeAt(0) === 0xFEFF) {
+          await writeTextFile(configPath, verifyRaw.slice(1))
+        }
+      } else {
+        // ── Project scope: plain JSON ──────────────────────────────────────
+        const cwd = await ensureProjectCwd()
+        if (!cwd) {
+          phase.value = 'idle'
+          lastError.value = { at: Date.now(), phase: 'saving', message: '未找到项目目录，无法保存项目配置。' }
+          return false
+        }
+        const configPath = await join(cwd, '.opencode', 'config.json')
+
+        // Read existing config or start fresh
+        let existing: Record<string, unknown> = {}
+        if (await exists(configPath)) {
+          const rawText = await readTextFile(configPath)
+          existing = JSON.parse(rawText) as Record<string, unknown>
+        }
+
+        console.log(`[saveConfig:project] ${diffs.length} field-level changes detected`)
+
+        // Apply diffs to existing object
+        for (const diff of diffs) {
+          const path = [...diff.path]
+          let current = existing
+          // Navigate to parent
+          for (let i = 0; i < path.length - 1; i++) {
+            const key = path[i] as string
+            if (!(key in current) || current[key] === null || typeof current[key] !== 'object') {
+              current[key] = {}
+            }
+            current = current[key] as Record<string, unknown>
+          }
+          const lastKey = path[path.length - 1] as string
+          if (diff.type === 'delete') {
+            delete current[lastKey]
+          } else {
+            current[lastKey] = diff.value
+          }
+        }
+
+        await writeTextFile(configPath, JSON.stringify(existing, null, 2))
       }
 
       // Update original to match what we just wrote
@@ -233,11 +316,14 @@ export const useConfigStore = defineStore('config', () => {
       phase.value = 'idle'
 
       // Restart Zed + Monitor via detached batch script
-      // Script survives the Zed kill because it runs as a separate process
       try {
         await invoke('restart_zed_and_monitor')
       } catch (e) {
-        lastError.value = { at: Date.now(), phase: 'saving', message: '配置已保存，但重启失败: ' + String(e) + '。请手动重启 Zed。' }
+        lastError.value = {
+          at: Date.now(),
+          phase: 'saving',
+          message: '配置已保存，但重启失败: ' + String(e) + '。请手动重启 Zed。',
+        }
       }
 
       return true
@@ -365,8 +451,18 @@ export const useConfigStore = defineStore('config', () => {
   const isDirty = computed(() => dirtyPaths.value.size > 0)
   const dirtyCount = computed(() => dirtyPaths.value.size)
 
+  const configFilePath = computed(() => {
+    if (configScope.value === 'global') {
+      return '~/.config/opencode/opencode.jsonc'
+    }
+    if (projectCwd.value) {
+      return projectCwd.value + '/.opencode/config.json'
+    }
+    return ''
+  })
+
   return {
-    original, draft, phase, activeSection, panelOpen, targetUrl,
+    original, draft, phase, activeSection, panelOpen, targetUrl, configScope, projectCwd, configFilePath,
     restartStartTime, restartElapsed, restartDetected, restartConfirmed,
     pendingDismiss, pendingSave, pendingConnectNewUrl, lastError, dirtyPaths,
     isDirty, dirtyCount,
