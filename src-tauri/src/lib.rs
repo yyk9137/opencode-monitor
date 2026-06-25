@@ -80,6 +80,45 @@ fn discover_opencode_ports() -> Vec<u32> {
     ports
 }
 
+/// Set a user-level environment variable on Windows using setx.
+/// The variable persists across reboots and is available to new processes.
+#[tauri::command]
+fn set_env_var(name: String, value: String) -> Result<String, String> {
+    // Validate inputs
+    if name.is_empty() {
+        return Err("Environment variable name cannot be empty".to_string());
+    }
+    if value.is_empty() {
+        return Err("Environment variable value cannot be empty".to_string());
+    }
+
+    // Use setx to set a user-level environment variable
+    // setx sets the variable in the registry (HKCU\Environment) and broadcasts WM_SETTINGCHANGE
+    // Note: setx truncates values to 1024 chars, but API keys are typically much shorter
+    let result = Command::new("setx")
+        .args([&name, &value])
+        .output();
+
+    match result {
+        Ok(output) => {
+            if output.status.success() {
+                Ok(format!("Environment variable {} set successfully", name))
+            } else {
+                let stderr = String::from_utf8_lossy(&output.stderr);
+                let stdout = String::from_utf8_lossy(&output.stdout);
+                Err(format!("setx failed: {} {}", stdout, stderr))
+            }
+        }
+        Err(e) => Err(format!("Failed to execute setx: {}", e)),
+    }
+}
+
+/// Get a user-level environment variable value.
+#[tauri::command]
+fn get_env_var(name: String) -> Option<String> {
+    std::env::var(&name).ok()
+}
+
 /// Kill Zed process and relaunch it, so OpenCode restarts with new config.
 #[tauri::command]
 fn restart_zed() -> Result<String, String> {
@@ -136,7 +175,7 @@ pub fn run() {
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_http::init())
         .plugin(tauri_plugin_fs::init())
-        .invoke_handler(tauri::generate_handler![get_cli_args, discover_opencode_ports, restart_zed])
+        .invoke_handler(tauri::generate_handler![get_cli_args, discover_opencode_ports, restart_zed, set_env_var, get_env_var])
         .setup(|app| {
             // Open devtools automatically in debug builds for diagnostics
             #[cfg(debug_assertions)]

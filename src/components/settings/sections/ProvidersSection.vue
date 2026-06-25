@@ -2,6 +2,7 @@
 import { computed, ref } from 'vue'
 import { ChevronDown, ChevronRight, Plus, Trash2, RefreshCw, Loader2 } from 'lucide-vue-next'
 import { useConfigStore } from '@/stores/config'
+import { invoke } from '@tauri-apps/api/core'
 
 const configStore = useConfigStore()
 const expanded = ref<string | null>(null)
@@ -59,15 +60,37 @@ function updateOptions(id: string, key: string, value: unknown) {
 
 // apiKey: write-only, never repopulate from saved config
 // Key behavior: empty input = keep existing (don't delete), non-empty = update
+// If user enters plaintext key, auto-set env var and store {env:VAR_NAME} in config
 const apiKeyInputs = ref<Record<string, string>>({})
-function onApiKeyInput(id: string, value: string) {
+
+/** Convert provider ID to env var name: e.g. "my-provider" -> "MY_PROVIDER_API_KEY" */
+function providerIdToEnvVar(id: string): string {
+  return id.toUpperCase().replace(/[^A-Z0-9]/g, '_') + '_API_KEY'
+}
+
+/** Check if a string looks like an env var reference */
+function isEnvVarRef(value: string): boolean {
+  return value.startsWith('{env:') && value.endsWith('}')
+}
+
+async function onApiKeyInput(id: string, value: string) {
   apiKeyInputs.value[id] = value
-  if (value) {
-    // User entered a new key → write it to draft
+  if (!value) return
+  // User entered a new key
+  if (isEnvVarRef(value)) {
+    // User explicitly typed {env:VAR_NAME} format → save as-is
+    updateOptions(id, 'apiKey', value)
+    return
+  }
+  // User entered plaintext key → auto-set env var + store {env:VAR_NAME}
+  const envVarName = providerIdToEnvVar(id)
+  try {
+    await invoke('set_env_var', { name: envVarName, value })
+    updateOptions(id, 'apiKey', '{env:' + envVarName + '}')
+  } catch {
+    // setx failed → save plaintext as fallback
     updateOptions(id, 'apiKey', value)
   }
-  // If empty → don't touch draft's apiKey (preserve existing value from original)
-  // This prevents accidental deletion of saved keys when editing other fields
 }
 
 /** Check if the existing apiKey for a provider uses {env:VAR_NAME} format */
