@@ -106,31 +106,6 @@ onMounted(async () => {
   isMaximized.value = await appWindow.isMaximized();
   dbg('App mounted')
 
-  // Read --cwd CLI arg (passed by Zed task: --cwd $ZED_WORKTREE_ROOT).
-  try {
-    const args = await invoke<string[]>("get_cli_args");
-    dbg(`CLI args = ${JSON.stringify(args)}`)
-    const cwdIdx = args.indexOf("--cwd");
-    if (cwdIdx !== -1 && args[cwdIdx + 1]) {
-      let cwd = args[cwdIdx + 1];
-      // If --cwd points to a file (not a directory), use its parent directory
-      // This happens when Zed's $ZED_WORKTREE_ROOT resolves to a file path
-      // e.g. when Zed opened a single file rather than a project folder
-      if (cwd.includes('.') && !cwd.endsWith('\\') && !cwd.endsWith('/')) {
-        const lastSep = Math.max(cwd.lastIndexOf('\\'), cwd.lastIndexOf('/'));
-        if (lastSep > 0) {
-          cwd = cwd.substring(0, lastSep);
-        }
-      }
-      store.cwdFilter = cwd;
-      dbg(`cwdFilter set to = ${store.cwdFilter}`)
-    } else {
-      dbg('no --cwd arg')
-    }
-  } catch {
-    dbg('get_cli_args failed')
-  }
-
   dbg('starting orchestrate')
   await orchestrate();
   dbg('orchestrate done, starting stuck detection')

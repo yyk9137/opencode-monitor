@@ -416,26 +416,11 @@ export const useSessionStore = defineStore('session', () => {
 
   const tree = computed<SessionNode[]>(() => {
     const all = Array.from(sessions.value.values())
-    // Filter by cwd if --cwd was provided.
-    // Normalize paths: strip trailing separators, unify to backslash,
-    // lowercase for case-insensitive comparison (Windows is case-insensitive).
-    const cwd = cwdFilter.value
-    let filtered = cwd
-      ? all.filter(s => {
-          const normalize = (p: string) => p.replace(/[\\/]+$/, '').replace(/\//g, '\\').toLowerCase()
-          const sessionDir = normalize(s.directory)
-          const normalizedCwd = normalize(cwd)
-          return sessionDir === normalizedCwd || sessionDir.startsWith(normalizedCwd + '\\')
-        })
-      : all
-    // If cwd filter matches nothing, show all sessions (better UX than empty list)
-    if (filtered.length === 0 && all.length > 0) {
-      filtered = all
-    }
+    // No cwd filtering — show all sessions from all instances
     const childrenMap = new Map<string, SessionNode[]>()
     const topLevel: SessionNode[] = []
 
-    for (const session of filtered) {
+    for (const session of all) {
       const node: SessionNode = { ...session, children: [] }
       // API returns parentID as empty string "" for top-level sessions, not null.
       // Treat both null and "" as top-level.
@@ -455,7 +440,7 @@ export const useSessionStore = defineStore('session', () => {
     }
 
     // Promote orphaned children to top-level — their parent session
-    // might not be in the filtered set (e.g. parent is from another project,
+    // might not be in the full set (e.g. parent is from another project,
     // or was truncated by the server's session limit).
     const topLevelIds = new Set(topLevel.map(n => n.id))
     for (const [parentId, children] of childrenMap) {
