@@ -180,9 +180,11 @@ export const useConfigStore = defineStore('config', () => {
     targetUrl.value = url
   }
 
-    // ── Read config directly from disk ───────────────────────────────────────
-  // Global scope:  ~/.config/opencode/opencode.jsonc  (JSONC, parsed via jsonc-parser)
-  // Project scope: <cwd>/.opencode/config.json        (plain JSON)
+    // ── Read config: hybrid approach (file for env vars, API for plugin agents) ──
+  // Global scope: read opencode.jsonc from disk (preserves {env:VAR} format)
+  //               + GET /config API (for plugin-registered agents/MCP)
+  //               → merge: use API's agent/mcp, but keep file's apiKey/headers
+  // Project scope: <cwd>/.opencode/config.json (plain JSON)
   async function fetchConfig(): Promise<boolean> {
     if (phase.value !== 'idle') return false
     if (pendingSave.value) return false
@@ -194,38 +196,63 @@ export const useConfigStore = defineStore('config', () => {
       let config: OpenCodeConfig
 
       if (configScope.value === 'global') {
+        // 1. Read from disk (preserves {env:VAR} format and comments)
         const configPath = await getConfigPath()
         let rawText = '{}'
         if (await exists(configPath)) {
           rawText = await readTextFile(configPath)
         }
-        // JSONC — use jsonc-parser.parse() to handle comments
-        const parsed = parseJsonc(rawText)
-        config = (parsed ?? {}) as OpenCodeConfig
+        const fileConfig = (parseJsonc(rawText) ?? {}) as OpenCodeConfig
 
-        // Merge plugin configs for display (read-only — saving only writes to opencode.jsonc)
-        const home = await homeDir()
-        // oh-my-opencode-slim.json: plugin agents
-        const slimPath = await join(home, '.config', 'opencode', 'oh-my-opencode-slim.json')
-        if (await exists(slimPath)) {
+        // 2. Try GET /config API for plugin-registered agents/MCP
+        // Auto-detect OpenCode instance if targetUrl is not set
+        if (!targetUrl.value) {
           try {
-            const slimRaw = await readTextFile(slimPath)
-            const slim = JSON.parse(slimRaw) as { presets?: Record<string, { agents?: Record<string, unknown> }> }
-            // Merge agents from active preset into config.agent for display
-            if (!config.agent) config.agent = {}
-            for (const preset of Object.values(slim.presets ?? {})) {
-              if (preset.agents) {
-                for (const [agentId, agentDef] of Object.entries(preset.agents)) {
-                  // Only add if not already in config (don't override user config)
-                  if (!config.agent![agentId]) {
-                    config.agent![agentId] = agentDef as never
-                  }
-                }
-              }
+            const ports = await invoke<number[]>('discover_opencode_ports')
+            if (ports.length > 0) {
+              targetUrl.value = 'http://localhost:' + ports[0]
             }
           } catch {
-            // Plugin config parse failure — skip
+            // Discovery failed — fall back to default port
+            targetUrl.value = 'http://localhost:4096'
           }
+        }
+        let apiConfig: OpenCodeConfig | null = null
+        if (targetUrl.value) {
+          try {
+            const resp = await fetch(targetUrl.value + '/config')
+            if (resp.ok) {
+              apiConfig = (await resp.json()) as OpenCodeConfig
+            }
+          } catch {
+            // API not available — fall back to file-only
+          }
+        }
+
+        // 3. Merge: start with file config, then add agents/MCP from API
+        config = fileConfig
+        if (apiConfig) {
+          // Merge agents from API (plugin-registered agents like explorer, historian, etc.)
+          if (!config.agent) config.agent = {}
+          if (apiConfig.agent) {
+            for (const [agentId, agentDef] of Object.entries(apiConfig.agent)) {
+              // Only add agents that don't exist in file config (file takes priority)
+              if (!config.agent[agentId]) {
+                config.agent[agentId] = agentDef
+              }
+            }
+          }
+          // Merge MCP servers from API
+          if (!config.mcp) config.mcp = {}
+          if (apiConfig.mcp) {
+            for (const [mcpId, mcpDef] of Object.entries(apiConfig.mcp)) {
+              if (!config.mcp[mcpId]) {
+                config.mcp[mcpId] = mcpDef
+              }
+            }
+          }
+          // Note: apiKey and headers are NOT merged from API
+          // → file config's {env:VAR} values are preserved
         }
       } else {
         const cwd = await ensureProjectCwd()

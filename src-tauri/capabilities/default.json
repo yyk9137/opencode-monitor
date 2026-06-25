@@ -16,21 +16,24 @@
       "identifier": "fs:allow-read-text-file",
       "allow": [
         { "path": "$HOME/.config/opencode/*" },
-        { "path": "$HOME/.config/cortexkit/*" }
+        { "path": "$HOME/.config/cortexkit/*" },
+        { "path": "**/*" }
       ]
     },
     {
       "identifier": "fs:allow-write-text-file",
       "allow": [
         { "path": "$HOME/.config/opencode/*" },
-        { "path": "$HOME/.config/cortexkit/*" }
+        { "path": "$HOME/.config/cortexkit/*" },
+        { "path": "**/*" }
       ]
     },
     {
       "identifier": "fs:allow-exists",
       "allow": [
         { "path": "$HOME/.config/opencode/*" },
-        { "path": "$HOME/.config/cortexkit/*" }
+        { "path": "$HOME/.config/cortexkit/*" },
+        { "path": "**/*" }
       ]
     },
     {
