@@ -83,60 +83,68 @@ function addCommandArg(name: string) {
 }
 
 // ── Environment / Headers (Record<string,string> ↔ KVRow[]) ──────────────
+// Mask sensitive values: if the value doesn't start with {env:, mask it
+// API returns resolved values (plaintext secrets), we only show {env:VAR} format
+function maskValue(value: string): string {
+  if (value.startsWith('{env:') && value.endsWith('}')) return value
+  if (value.length === 0) return ''
+  return '••••••••'
+}
+
 function recordToKV(record: Record<string, string> | undefined): KVRow[] {
   if (!record) return []
-  return Object.entries(record).map(([key, value]) => ({ key, value }))
+  return Object.entries(record).map(([key, value]) => ({ key, value: maskValue(value) }))
 }
-function kvToRecord(rows: KVRow[]): Record<string, string> {
-  const result: Record<string, string> = {}
-  for (const row of rows) {
-    if (row.key.trim()) result[row.key.trim()] = row.value
-  }
-  return result
-}
+// kvToRecord is now inlined in update functions
 
 function updateEnvRow(name: string, index: number, field: 'key' | 'value', value: string) {
   if (!configStore.draft?.mcp?.[name]) return
   const server = configStore.draft.mcp[name] as McpLocalConfig
-  const rows = recordToKV(server.environment)
+  const rows = Object.entries(server.environment ?? {}).map(([k, v]) => ({ key: k, value: v }))
   rows[index][field] = value
-  updateField(name, 'environment', kvToRecord(rows))
+  const result: Record<string, string> = {}
+  for (const row of rows) { if (row.key.trim()) result[row.key.trim()] = row.value }
+  updateField(name, 'environment', result)
 }
 function addEnvRow(name: string) {
   if (!configStore.draft?.mcp?.[name]) return
   const server = configStore.draft.mcp[name] as McpLocalConfig
-  const rows = recordToKV(server.environment)
-  rows.push({ key: '', value: '' })
-  updateField(name, 'environment', kvToRecord(rows))
+  const result: Record<string, string> = { ...(server.environment ?? {}), '': '' }
+  updateField(name, 'environment', result)
 }
 function removeEnvRow(name: string, index: number) {
   if (!configStore.draft?.mcp?.[name]) return
   const server = configStore.draft.mcp[name] as McpLocalConfig
-  const rows = recordToKV(server.environment)
+  const rows = Object.entries(server.environment ?? {})
   rows.splice(index, 1)
-  updateField(name, 'environment', kvToRecord(rows))
+  const result: Record<string, string> = {}
+  for (const [k, v] of rows) result[k] = v
+  updateField(name, 'environment', result)
 }
 
 function updateHeaderRow(name: string, index: number, field: 'key' | 'value', value: string) {
   if (!configStore.draft?.mcp?.[name]) return
   const server = configStore.draft.mcp[name] as McpRemoteConfig
-  const rows = recordToKV(server.headers)
+  const rows = Object.entries(server.headers ?? {}).map(([k, v]) => ({ key: k, value: v }))
   rows[index][field] = value
-  updateField(name, 'headers', kvToRecord(rows))
+  const result: Record<string, string> = {}
+  for (const row of rows) { if (row.key.trim()) result[row.key.trim()] = row.value }
+  updateField(name, 'headers', result)
 }
 function addHeaderRow(name: string) {
   if (!configStore.draft?.mcp?.[name]) return
   const server = configStore.draft.mcp[name] as McpRemoteConfig
-  const rows = recordToKV(server.headers)
-  rows.push({ key: '', value: '' })
-  updateField(name, 'headers', kvToRecord(rows))
+  const result: Record<string, string> = { ...(server.headers ?? {}), '': '' }
+  updateField(name, 'headers', result)
 }
 function removeHeaderRow(name: string, index: number) {
   if (!configStore.draft?.mcp?.[name]) return
   const server = configStore.draft.mcp[name] as McpRemoteConfig
-  const rows = recordToKV(server.headers)
+  const rows = Object.entries(server.headers ?? {})
   rows.splice(index, 1)
-  updateField(name, 'headers', kvToRecord(rows))
+  const result: Record<string, string> = {}
+  for (const [k, v] of rows) result[k] = v
+  updateField(name, 'headers', result)
 }
 
 // ── OAuth toggle ─────────────────────────────────────────────────────────
@@ -244,7 +252,7 @@ function disableServer(name: string) {
               <div class="kv-list">
                 <div v-for="(row, i) in recordToKV(server.environment)" :key="i" class="kv-row">
                   <input :value="row.key" class="form-input mono kv-key" placeholder="KEY" @input="updateEnvRow(name, i, 'key', ($event.target as HTMLInputElement).value)" />
-                  <input :value="row.value" class="form-input mono kv-value" placeholder="value" @input="updateEnvRow(name, i, 'value', ($event.target as HTMLInputElement).value)" />
+                  <input :value="row.value" type="password" class="form-input mono kv-value" placeholder="{env:VAR_NAME} or value" @input="updateEnvRow(name, i, 'value', ($event.target as HTMLInputElement).value)" />
                   <button class="kv-remove" @click="removeEnvRow(name, i)">×</button>
                 </div>
                 <button class="btn-add-cmd" @click="addEnvRow(name)">+ Add variable</button>
@@ -265,7 +273,7 @@ function disableServer(name: string) {
               <div class="kv-list">
                 <div v-for="(row, i) in recordToKV(server.headers)" :key="i" class="kv-row">
                   <input :value="row.key" class="form-input mono kv-key" placeholder="Header" @input="updateHeaderRow(name, i, 'key', ($event.target as HTMLInputElement).value)" />
-                  <input :value="row.value" class="form-input mono kv-value" placeholder="value" @input="updateHeaderRow(name, i, 'value', ($event.target as HTMLInputElement).value)" />
+                  <input :value="row.value" type="password" class="form-input mono kv-value" placeholder="{env:VAR_NAME} or value" @input="updateHeaderRow(name, i, 'value', ($event.target as HTMLInputElement).value)" />
                   <button class="kv-remove" @click="removeHeaderRow(name, i)">×</button>
                 </div>
                 <button class="btn-add-cmd" @click="addHeaderRow(name)">+ Add header</button>
