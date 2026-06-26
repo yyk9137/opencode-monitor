@@ -3,6 +3,7 @@ import { computed, ref } from 'vue'
 import { ChevronDown, ChevronRight, Plus, Trash2, RefreshCw, Loader2 } from 'lucide-vue-next'
 import { useConfigStore } from '@/stores/config'
 import { invoke } from '@tauri-apps/api/core'
+import { fetch as tauriFetch } from '@tauri-apps/plugin-http'
 
 const configStore = useConfigStore()
 const expanded = ref<string | null>(null)
@@ -213,19 +214,37 @@ const importLoading = ref<Set<string>>(new Set())
 const importMessages = ref<Record<string, string>>({})
 const importErrors = ref<Record<string, string>>({})
 
+async function fetchLog(msg: string) {
+  const ts = new Date().toISOString()
+  const line = `[${ts}] ${msg}`
+  console.log(line)
+  try {
+    await invoke('write_debug_log', { lines: line })
+  } catch {
+    // write_debug_log may fail — ignore, console.log is the fallback
+  }
+}
+
 async function importModelsFromServer(providerId: string) {
   if (!configStore.draft?.provider?.[providerId]) return
 
   const config = configStore.draft.provider[providerId]
   const baseURL = config.options?.baseURL as string | undefined
-  const apiKey = apiKeyInputs.value[providerId] || (config.options?.apiKey as string | undefined)
+  const apiKeyInputValue = apiKeyInputs.value[providerId]
+  const apiKey = apiKeyInputValue || (config.options?.apiKey as string | undefined)
+  const configApiKey = config.options?.apiKey as string | undefined
+
+  // LOG: startup info
+  await fetchLog(`[fetch-models] START providerId=${providerId} baseURL=${baseURL ?? '(none)'} apiKeyInput_set=${!!apiKeyInputValue} apiKey_prefix=${apiKey ? apiKey.substring(0, 8) : '(none)'} apiKey_len=${apiKey?.length ?? 0} config_apiKey=${configApiKey ?? '(none)'}`)
 
   if (!baseURL) {
     importErrors.value[providerId] = 'Base URL is required to fetch models.'
+    await fetchLog(`[fetch-models] ABORT providerId=${providerId} reason=no baseURL`)
     return
   }
   if (!apiKey) {
     importErrors.value[providerId] = 'API Key is required to fetch models.'
+    await fetchLog(`[fetch-models] ABORT providerId=${providerId} reason=no apiKey`)
     return
   }
 
@@ -235,22 +254,32 @@ async function importModelsFromServer(providerId: string) {
 
   try {
     // OpenAI-compatible /v1/models endpoint
-    // Use window.fetch (not Tauri's fetch) to avoid scope/permission issues with external URLs
+    // Use Tauri's plugin-http fetch (Rust-side reqwest) to avoid webview CORS issues
     const url = baseURL.replace(/\/$/, '') + '/models'
-    const resp = await window.fetch(url, {
-      headers: { 'Authorization': 'Bearer ' + apiKey },
+    await fetchLog(`[fetch-models] REQUEST providerId=${providerId} url=${url} auth=Bearer:${apiKey.substring(0, 8)}...`)
+
+    const resp = await tauriFetch(url, {
+      headers: { 'Authorization': 'Bearer ' + apiKey, 'Origin': '' },
     })
+
+    // Read body as text first (works for both success and error responses)
+    const respText = await resp.text()
+    await fetchLog(`[fetch-models] RESPONSE providerId=${providerId} status=${resp.status} ok=${resp.ok} body_prefix=${respText.substring(0, 500)}`)
 
     if (!resp.ok) {
       importErrors.value[providerId] = 'GET ' + url + ' failed: ' + resp.status
+      await fetchLog(`[fetch-models] FAILED providerId=${providerId} status=${resp.status} not ok`)
       return
     }
 
-    const data = await resp.json() as { data?: Array<{ id: string; object?: string }> }
+    const data = JSON.parse(respText) as { data?: Array<{ id: string; object?: string }> }
     const models = data.data || []
+
+    await fetchLog(`[fetch-models] PARSED providerId=${providerId} models_count=${models.length} first_3_ids=${models.slice(0, 3).map(m => m.id).join(', ')}`)
 
     if (models.length === 0) {
       importErrors.value[providerId] = 'No models returned from provider.'
+      await fetchLog(`[fetch-models] EMPTY providerId=${providerId} no models returned`)
       return
     }
 
@@ -270,10 +299,15 @@ async function importModelsFromServer(providerId: string) {
     }
     configStore.dirtyPaths.add('provider.' + providerId + '.models')
     importMessages.value[providerId] = 'Fetched ' + added + ' model' + (added !== 1 ? 's' : '') + ' from upstream.'
+    await fetchLog(`[fetch-models] SUCCESS providerId=${providerId} added=${added}`)
   } catch (e) {
-    importErrors.value[providerId] = String(e)
+    const errType = e instanceof Error ? e.constructor.name : typeof e
+    const errMsg = String(e)
+    importErrors.value[providerId] = errMsg
+    await fetchLog(`[fetch-models] EXCEPTION providerId=${providerId} error_type=${errType} message=${errMsg}`)
   } finally {
     importLoading.value.delete(providerId)
+    await fetchLog(`[fetch-models] END providerId=${providerId}`)
   }
 }
 

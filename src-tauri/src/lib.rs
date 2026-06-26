@@ -36,10 +36,10 @@ fn write_debug_log(lines: String) -> Result<String, String> {
     let mut file = std::fs::OpenOptions::new()
         .write(true)
         .create(true)
-        .truncate(true)
+        .append(true)
         .open(&log_path)
         .map_err(|e| format!("Failed to open log: {}", e))?;
-    file.write_all(lines.as_bytes())
+    file.write_all(format!("{}\n", lines).as_bytes())
         .map_err(|e| format!("Failed to write log: {}", e))?;
     Ok("Log written".to_string())
 }
