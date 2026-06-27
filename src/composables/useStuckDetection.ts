@@ -4,6 +4,12 @@ import type { StuckAlert } from '@/types'
 
 const DEFAULT_CHECK_INTERVAL_MS = 10_000
 
+// ── Helper: check if idle time exceeds a threshold ───────────────────────
+function isIdleBeyond(lastUpdated: number | undefined, thresholdMs: number): boolean {
+  if (!lastUpdated) return false
+  return Date.now() - lastUpdated > thresholdMs
+}
+
 interface UseStuckDetectionOptions {
   checkIntervalMs?: number
 }
@@ -64,27 +70,15 @@ export function useStuckDetection(
       // a proper step-finish event.
       const lastMsg = messages[messages.length - 1]
       const lastUpdated = lastMsg?.info?.time?.updated
-      if (lastUpdated) {
-        const idleMs = Date.now() - lastUpdated
-        if (idleMs > store.stuckThresholdMs * 2) {
-          return false
-        }
-      }
+      if (isIdleBeyond(lastUpdated, store.stuckThresholdMs * 2)) return false
 
       // Check if any tool part is still actively running.
       let hasRunningTool = false
       let hasStepFinish = false
       for (const msg of messages) {
         for (const part of msg.parts) {
-          if (
-            part.type === 'tool' &&
-            part.state?.status === 'running'
-          ) {
-            hasRunningTool = true
-          }
-          if (part.type === 'step-finish') {
-            hasStepFinish = true
-          }
+          if (part.type === 'tool' && part.state?.status === 'running') hasRunningTool = true
+          if (part.type === 'step-finish') hasStepFinish = true
         }
       }
 
@@ -92,27 +86,14 @@ export function useStuckDetection(
       // (meaning at least one step completed), AND the last update was
       // more than the stuck threshold ago, the tool state is stale —
       // the session was likely aborted between steps.
-      if (hasRunningTool && hasStepFinish) {
-        // We already checked lastUpdated above and it's within 2x threshold.
-        // But if it's beyond 1x threshold (which is why we're here), the
-        // running tool is stale.
-        if (lastUpdated) {
-          const idleMs = Date.now() - lastUpdated
-          if (idleMs > store.stuckThresholdMs) {
-            return false
-          }
-        }
+      if (hasRunningTool && hasStepFinish && isIdleBeyond(lastUpdated, store.stuckThresholdMs)) {
+        return false
       }
 
       // If there's a running tool and no step-finish (first step still going),
       // check the idle time more carefully.
-      if (hasRunningTool && !hasStepFinish) {
-        if (lastUpdated) {
-          const idleMs = Date.now() - lastUpdated
-          if (idleMs > store.stuckThresholdMs) {
-            return false
-          }
-        }
+      if (hasRunningTool && !hasStepFinish && isIdleBeyond(lastUpdated, store.stuckThresholdMs)) {
+        return false
       }
 
       return hasRunningTool

@@ -165,21 +165,11 @@ export function useEventStream(): UseEventStreamReturn {
           }
           break
         }
-        case 'session.error': {
-          // Session encountered an error — mark as error state
-          const d = data as { sessionID?: string }
-          if (d.sessionID) {
-            store.backfillState(d.sessionID, 'error', null)
-          }
-          break
-        }
+        case 'session.error':
         case 'session.deleted': {
-          // Session was deleted/archived — mark as error so it stops being
-          // flagged as running/stuck and gets cleaned up
-          const d = data as { sessionID?: string; info?: SessionV2Info }
-          if (d.sessionID) {
-            store.backfillState(d.sessionID, 'error', null)
-          }
+          // Session error or deleted — mark as error to stop stuck detection
+          const d = data as { sessionID?: string }
+          if (d.sessionID) store.backfillState(d.sessionID, 'error', null)
           break
         }
         case 'message.part.updated': {

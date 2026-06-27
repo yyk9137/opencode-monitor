@@ -4,6 +4,12 @@ import { useSessionMessages } from '@/composables/useSessionMessages'
 import { useToast } from '@/composables/useToast'
 import type { FileDiff, RevertResult } from '@/types'
 
+const REVERT_ERRORS: Record<string, string> = {
+  busy: 'Session is running — abort first',
+  'not-found': 'Session or message not found',
+  'bad-request': 'Invalid message ID',
+}
+
 export interface UseSessionActionsReturn {
   inFlight: Record<string, boolean>
   lastError: ReturnType<typeof ref<string | null>>
@@ -51,13 +57,7 @@ export function useSessionActions(): UseSessionActionsReturn {
         toast('Message reverted', 'success')
         await refreshParts(sessionId)
       } else {
-        const msg = result.error === 'busy'
-          ? 'Session is running — abort first'
-          : result.error === 'not-found'
-            ? 'Session or message not found'
-            : result.error === 'bad-request'
-              ? 'Invalid message ID'
-              : 'Failed to revert message'
+        const msg = REVERT_ERRORS[result.error] ?? 'Failed to revert message'
         toast(msg, 'error')
         lastError.value = msg
       }
@@ -77,9 +77,7 @@ export function useSessionActions(): UseSessionActionsReturn {
         toast('Messages restored', 'success')
         await refreshParts(sessionId)
       } else {
-        const msg = result.error === 'busy'
-          ? 'Session is running — abort first'
-          : 'Failed to restore messages'
+        const msg = result.error === 'busy' ? REVERT_ERRORS['busy'] : 'Failed to restore messages'
         toast(msg, 'error')
         lastError.value = msg
       }

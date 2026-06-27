@@ -24,11 +24,7 @@ export interface ConfigError {
   message: string
 }
 
-// ── Deep clone that handles Vue reactive proxies ──────────────────────────
-function cloneDeep<T>(value: T): T {
-  if (value === null || value === undefined) return value
-  return JSON.parse(JSON.stringify(value))
-}
+// structuredClone replaces the old cloneDeep — handles Vue reactive proxies natively
 
 // ── Config file path resolution ────────────────────────────────────────────
 let _configPath: string | null = null
@@ -99,6 +95,32 @@ function deepDiff(original: unknown, draft: unknown, basePath: (string | number)
   }
 
   return diffs
+}
+
+// ── Apply JSONC diffs with BOM guard ─────────────────────────────────────
+// Shared helper for opencode.jsonc, slim.json, and magic-context.jsonc saves.
+async function applyJsoncDiffs(
+  filePath: string,
+  rawText: string,
+  diffs: DiffEntry[],
+): Promise<{ text: string; applied: number }> {
+  const formattingOptions = { tabSize: 2, insertSpaces: true, eol: '\n' } as const
+  let modified = rawText
+  let applied = 0
+  for (const diff of diffs) {
+    try {
+      const edits = modifyJsonc(modified, diff.path, diff.value, { formattingOptions })
+      modified = applyJsoncEdits(modified, edits)
+      applied++
+    } catch { /* modify may fail for complex paths — skip */ }
+  }
+  if (applied > 0) {
+    await writeTextFile(filePath, modified)
+    // Verify no BOM was written (safety check)
+    const verify = await readTextFile(filePath)
+    if (verify.charCodeAt(0) === 0xFEFF) await writeTextFile(filePath, verify.slice(1))
+  }
+  return { text: modified, applied }
 }
 
 // ── Config scope type ─────────────────────────────────────────────────────
@@ -361,7 +383,7 @@ export const useConfigStore = defineStore('config', () => {
       }
 
       original.value = config
-      draft.value = cloneDeep(config)
+      draft.value = structuredClone(config)
       dirtyPaths.value = new Set()
       phase.value = 'idle'
       return true
@@ -383,8 +405,8 @@ export const useConfigStore = defineStore('config', () => {
     lastError.value = null
 
     try {
-      const o = cloneDeep(original.value) as Record<string, unknown>
-      const d = cloneDeep(draft.value) as Record<string, unknown>
+      const o = structuredClone(original.value) as Record<string, unknown>
+      const d = structuredClone(draft.value) as Record<string, unknown>
       const diffs = deepDiff(o, d)
 
       if (configScope.value === 'global') {
@@ -425,76 +447,25 @@ export const useConfigStore = defineStore('config', () => {
         }
 
         // Apply opencode.jsonc changes
-        const formattingOptions = { tabSize: 2, insertSpaces: true, eol: '\n' } as const
-        let modifiedText = rawText
-        let applied = 0
-        for (const diff of opencodeDiffs) {
-          try {
-            const edits = modifyJsonc(modifiedText, diff.path, diff.value, { formattingOptions })
-            modifiedText = applyJsoncEdits(modifiedText, edits)
-            applied++
-          } catch {
-            // jsonc-parser.modify may fail for complex paths — skip and continue
-          }
-        }
-        console.log(`[saveConfig:global] applied ${applied}/${diffs.length} changes`)
-
-        await writeTextFile(configPath, modifiedText)
-
-        // Verify no BOM was written (safety check)
-        const verifyRaw = await readTextFile(configPath)
-        if (verifyRaw.charCodeAt(0) === 0xFEFF) {
-          await writeTextFile(configPath, verifyRaw.slice(1))
-        }
+        const { applied } = await applyJsoncDiffs(configPath, rawText, opencodeDiffs)
+        console.log(`[saveConfig:global] applied ${applied}/${opencodeDiffs.length} changes`)
 
         // Apply slim config changes (oh-my-opencode-slim.json)
         if (slimDiffs.length > 0 && slimConfigPath.value) {
-          let slimText = slimOriginalText.value || '{}'
-          let slimApplied = 0
-          for (const diff of slimDiffs) {
-            try {
-              const edits = modifyJsonc(slimText, diff.path, diff.value, { formattingOptions })
-              slimText = applyJsoncEdits(slimText, edits)
-              slimApplied++
-            } catch {
-              // modify may fail for complex paths — skip
-            }
-          }
+          const { text: slimText, applied: slimApplied } = await applyJsoncDiffs(
+            slimConfigPath.value, slimOriginalText.value || '{}', slimDiffs,
+          )
           console.log(`[saveConfig:slim] applied ${slimApplied}/${slimDiffs.length} changes to oh-my-opencode-slim.json`)
-          if (slimApplied > 0) {
-            await writeTextFile(slimConfigPath.value, slimText)
-            // Update slim original text for next save
-            slimOriginalText.value = slimText
-            // Verify no BOM
-            const slimVerify = await readTextFile(slimConfigPath.value)
-            if (slimVerify.charCodeAt(0) === 0xFEFF) {
-              await writeTextFile(slimConfigPath.value, slimVerify.slice(1))
-            }
-          }
+          if (slimApplied > 0) slimOriginalText.value = slimText
         }
 
         // Apply magic-context changes (magic-context.jsonc)
         if (magicDiffs.length > 0 && magicConfigPath.value) {
-          let magicText = magicOriginalText.value || '{}'
-          let magicApplied = 0
-          for (const diff of magicDiffs) {
-            try {
-              const edits = modifyJsonc(magicText, diff.path, diff.value, { formattingOptions })
-              magicText = applyJsoncEdits(magicText, edits)
-              magicApplied++
-            } catch {
-              // modify may fail for complex paths — skip
-            }
-          }
+          const { text: magicText, applied: magicApplied } = await applyJsoncDiffs(
+            magicConfigPath.value, magicOriginalText.value || '{}', magicDiffs,
+          )
           console.log(`[saveConfig:magic] applied ${magicApplied}/${magicDiffs.length} changes to magic-context.jsonc`)
-          if (magicApplied > 0) {
-            await writeTextFile(magicConfigPath.value, magicText)
-            magicOriginalText.value = magicText
-            const magicVerify = await readTextFile(magicConfigPath.value)
-            if (magicVerify.charCodeAt(0) === 0xFEFF) {
-              await writeTextFile(magicConfigPath.value, magicVerify.slice(1))
-            }
-          }
+          if (magicApplied > 0) magicOriginalText.value = magicText
         }
       } else {
         // ── Project scope: plain JSON ──────────────────────────────────────
@@ -539,7 +510,7 @@ export const useConfigStore = defineStore('config', () => {
       }
 
       // Update original to match what we just wrote
-      original.value = cloneDeep(draft.value)
+      original.value = structuredClone(draft.value)
       dirtyPaths.value = new Set()
       phase.value = 'idle'
 
@@ -598,7 +569,7 @@ export const useConfigStore = defineStore('config', () => {
       if (!resp.ok) return
       const confirmed = (await resp.json()) as OpenCodeConfig
       original.value = confirmed
-      draft.value = cloneDeep(confirmed)
+      draft.value = structuredClone(confirmed)
       dirtyPaths.value = new Set()
       restartConfirmed.value = true
       phase.value = 'idle'
@@ -635,7 +606,7 @@ export const useConfigStore = defineStore('config', () => {
 
   function resetToSavedAfterTimeout() {
     if (original.value) {
-      draft.value = cloneDeep(original.value)
+      draft.value = structuredClone(original.value)
       dirtyPaths.value = new Set()
     }
     stopDetection()
@@ -644,7 +615,7 @@ export const useConfigStore = defineStore('config', () => {
 
   function resetToSaved() {
     if (!original.value) return
-    draft.value = cloneDeep(original.value)
+    draft.value = structuredClone(original.value)
     dirtyPaths.value = new Set()
   }
 
