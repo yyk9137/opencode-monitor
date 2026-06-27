@@ -15,6 +15,7 @@ interface HealthResponse {
 }
 
 interface ProjectResponse {
+  worktree?: string  // OpenCode returns directory as "worktree"
   data?: { directory?: string }
   directory?: string
   [key: string]: unknown
@@ -47,7 +48,7 @@ async function probeProjectDir(url: string, timeoutMs: number): Promise<string |
     const response = await Promise.race([fetchPromise, timeoutPromise])
     if (!response || !response.ok) return undefined
     const body = (await response.json()) as ProjectResponse
-    return body.data?.directory ?? body.directory ?? undefined
+    return body.worktree ?? body.data?.directory ?? body.directory ?? undefined
   } catch {
     return undefined
   }

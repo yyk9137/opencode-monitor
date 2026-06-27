@@ -1,4 +1,5 @@
 import { fetch } from '@tauri-apps/plugin-http'
+import { invoke } from '@tauri-apps/api/core'
 import { useSessionStore } from '@/stores/session'
 import type {
   SessionListResponse,
@@ -32,19 +33,22 @@ export function useSessionBootstrap(): UseSessionBootstrapReturn {
   const store = useSessionStore()
 
   async function bootstrapInstance(url: string): Promise<void> {
+    const log = (msg: string) => { console.log(msg); invoke('write_debug_log', { lines: msg }).catch(() => {}) }
     try {
       // Step 0: Get the current project directory from the server.
-      // /api/session without ?directory returns ALL projects' sessions.
-      // We need the current directory to filter like Zed does.
       let projectDir: string | undefined
       try {
         const projResp = await fetch(`${url}/project/current`, { signal: AbortSignal.timeout(3000) })
+        log(`[bootstrap] /project/current status: ${projResp.status}`)
         if (projResp.ok) {
-          const projBody = await projResp.json() as { data?: { directory?: string }; directory?: string }
-          projectDir = projBody.data?.directory ?? projBody.directory ?? undefined
+          const projBody = await projResp.json()
+          log(`[bootstrap] /project/current body: ${JSON.stringify(projBody).slice(0, 300)}`)
+          const projData = projBody as { worktree?: string; data?: { directory?: string }; directory?: string }
+          projectDir = projData.worktree ?? projData.data?.directory ?? projData.directory ?? undefined
+          log(`[bootstrap] projectDir: ${projectDir}`)
         }
-      } catch {
-        // /project/current unavailable — fall through
+      } catch (e) {
+        log(`[bootstrap] /project/current failed: ${e}`)
       }
 
       // Update the instance's projectDir so the tree filter can use it
@@ -64,10 +68,16 @@ export function useSessionBootstrap(): UseSessionBootstrapReturn {
         ? `${url}/api/session?directory=${encodeURIComponent(projectDir)}&limit=500`
         : `${url}/api/session?limit=500`
 
+      log(`[bootstrap] sessionUrl: ${sessionUrl}`)
+
       try {
         const response = await fetch(sessionUrl)
         if (response.ok) {
           const body: SessionListResponse = await response.json()
+          log(`[bootstrap] fetched ${body.data.length} sessions`)
+          for (const s of body.data.slice(0, 3)) {
+            log(`[bootstrap]   session "${s.title}" dir="${s.location?.directory}" archived=${s.time?.archived}`)
+          }
           for (const sessionInfo of body.data) {
             allSessions.push({ sessionInfo, instanceUrl: url })
           }

@@ -1,5 +1,6 @@
 import { ref } from 'vue'
 import { fetch } from '@tauri-apps/plugin-http'
+import { invoke } from '@tauri-apps/api/core'
 import { useSessionStore } from '@/stores/session'
 import type {
   SSEEvent,
@@ -59,6 +60,8 @@ export function useEventStream(): UseEventStreamReturn {
       const sessionUrl = dir
         ? `${url}/api/session?directory=${encodeURIComponent(dir)}`
         : `${url}/api/session`
+      console.log(`[reconcile] ${url} projectDir=${dir ?? 'none'} → ${sessionUrl}`)
+      invoke('write_debug_log', { lines: `[reconcile] ${url} projectDir=${dir ?? 'none'} → ${sessionUrl}` }).catch(() => {})
       const response = await fetch(sessionUrl)
       if (!response.ok) throw new Error(`HTTP ${response.status}`)
       const body: SessionListResponse = await response.json()

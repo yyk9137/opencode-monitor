@@ -1,6 +1,7 @@
 import { defineStore } from 'pinia'
 import { ref, shallowRef, computed } from 'vue'
 import { fetch } from '@tauri-apps/plugin-http'
+import { invoke } from '@tauri-apps/api/core'
 import type {
   SessionV2Info,
   SessionListResponse,
@@ -467,70 +468,63 @@ export const useSessionStore = defineStore('session', () => {
     return dir.replace(/\\/g, '/').replace(/\/+$/, '').toLowerCase()
   }
 
-  /** Get the set of project directories to show in the tree.
-   *  Priority: instance.projectDir (from /project/current probe) →
-   *  inferred from sessions (most common directory among connected instances). */
-  function getKnownDirs(): { dirs: Map<string, string>; active: boolean } {
-    // Try instance.projectDir first
-    const fromInstances = new Map<string, string>() // pathKey → original
+  const tree = computed<SessionNode[]>(() => {
+    // Build per-instance directory filter:
+    // If an instance has a projectDir, only show sessions from that directory
+    // tagged to that instance. Sessions from instances without projectDir pass through.
+    const instanceDirs = new Map<string, string>() // instanceUrl → pathKey(projectDir)
     for (const inst of instances.value) {
       if (inst.projectDir) {
-        fromInstances.set(pathKey(inst.projectDir), inst.projectDir)
+        instanceDirs.set(inst.url, pathKey(inst.projectDir))
       }
     }
-    if (fromInstances.size > 0) return { dirs: fromInstances, active: true }
 
-    // Fallback: infer the most common directory from sessions of connected instances
-    const connectedUrls = new Set(
-      instances.value.filter(i => i.connected).map(i => i.url)
-    )
-    if (connectedUrls.size === 0) return { dirs: new Map(), active: false }
+    const dbg = (msg: string) => invoke('write_debug_log', { lines: msg }).catch(() => {})
 
-    const dirCounts = new Map<string, { key: string; count: number }>()
-    for (const session of sessions.value.values()) {
-      if (!connectedUrls.has(session.instanceUrl)) continue
-      if (session.raw?.time?.archived) continue
-      if (!session.directory) continue
-      const key = pathKey(session.directory)
-      const existing = dirCounts.get(key)
-      if (existing) {
-        existing.count++
-      } else {
-        dirCounts.set(key, { key: session.directory, count: 1 })
-      }
+    if (sessions.value.size > 0) {
+      dbg(`[tree] instanceDirs: ${[...instanceDirs.entries()].map(([u, d]) => `${u}→${d}`).join(', ')}`)
+      dbg(`[tree] total sessions: ${sessions.value.size}`)
     }
-    if (dirCounts.size === 0) return { dirs: new Map(), active: false }
-
-    // Return the most common directory only (not all — that defeats the filter)
-    const sorted = [...dirCounts.values()].sort((a, b) => b.count - a.count)
-    const result = new Map<string, string>()
-    result.set(pathKey(sorted[0].key), sorted[0].key)
-    return { dirs: result, active: true }
-  }
-
-  const tree = computed<SessionNode[]>(() => {
-    const { dirs: knownDirs, active: hasKnownDirs } = getKnownDirs()
 
     const all = sessions.value.values()
     const filtered: SessionNode[] = []
+    let skippedArchived = 0
+    let skippedEmpty = 0
+    let skippedDir = 0
     for (const session of all) {
-      if (session.raw?.time?.archived) continue
-      if (isEmptySession(session)) continue
-      // If we know which projects we're monitoring, hide sessions from other projects
-      if (hasKnownDirs && session.directory && !knownDirs.has(pathKey(session.directory))) continue
+      if (session.raw?.time?.archived) { skippedArchived++; continue }
+      if (isEmptySession(session)) { skippedEmpty++; continue }
+      // Per-instance directory filter: if this session's instance has a known
+      // projectDir, the session's directory must match it.
+      const instDir = instanceDirs.get(session.instanceUrl)
+      if (instDir && session.directory && pathKey(session.directory) !== instDir) {
+        skippedDir++
+        continue
+      }
       filtered.push(session)
     }
+
+    if (sessions.value.size > 0) {
+      dbg(`[tree] result: ${filtered.length} shown, ${skippedArchived} archived, ${skippedEmpty} empty, ${skippedDir} wrong-dir`)
+    }
+
     return computeTree(filtered[Symbol.iterator]())
   })
 
   /** Archived top-level sessions (no parentID) whose raw.time.archived is truthy.
-   *  Filtered to known project directories (same as tree). */
+   *  Filtered per-instance (same as tree). */
   const archivedTree = computed<SessionNode[]>(() => {
-    const { dirs: knownDirs, active: hasKnownDirs } = getKnownDirs()
+    const instanceDirs = new Map<string, string>()
+    for (const inst of instances.value) {
+      if (inst.projectDir) {
+        instanceDirs.set(inst.url, pathKey(inst.projectDir))
+      }
+    }
     const archived: SessionNode[] = []
     for (const session of sessions.value.values()) {
       if (!session.parentID && session.raw?.time?.archived) {
-        if (hasKnownDirs && session.directory && !knownDirs.has(pathKey(session.directory))) continue
+        const instDir = instanceDirs.get(session.instanceUrl)
+        if (instDir && session.directory && pathKey(session.directory) !== instDir) continue
         archived.push({ ...session, children: [] })
       }
     }
