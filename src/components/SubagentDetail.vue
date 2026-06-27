@@ -11,6 +11,7 @@ import {
 } from 'vue'
 import {
   AlertTriangle,
+  Archive,
   ArrowLeft,
   ArrowLeftRight,
   CheckCircle2,
@@ -160,6 +161,8 @@ const revert = sessionActions.revert
 const unrevert = sessionActions.unrevert
 const abortSession = sessionActions.abortSession
 const viewDiff = sessionActions.viewDiff
+const archiveSession = sessionActions.archiveSession
+const unarchiveSession = sessionActions.unarchiveSession
 void sessionActions.fork
 
 interface ActiveView {
@@ -228,7 +231,10 @@ watch(
 
 watch(
   () => store.activeTabId,
-  () => { bodyMode.value = 'stream' },
+  () => {
+    bodyMode.value = 'stream'
+    showAllParts.value = false
+  },
 )
 
 function toggleChildList(): void {
@@ -241,6 +247,9 @@ async function openChildFromList(childId: string): Promise<void> {
 }
 
 const streamRef = ref<HTMLElement | null>(null)
+
+const RECENT_PART_LIMIT = 20
+const showAllParts = ref(false)
 
 const backfilledParts = shallowRef<MessagePart[]>([])
 
@@ -297,7 +306,7 @@ async function handleRevert(part: MessagePart): Promise<void> {
 }
 
 const visibleParts = computed<MessagePart[]>(() => {
-  return displayParts.value.filter(
+  const filtered = displayParts.value.filter(
     (p) =>
       p.type !== 'step-start' &&
       p.type !== 'step-finish' &&
@@ -305,6 +314,23 @@ const visibleParts = computed<MessagePart[]>(() => {
       p.type !== 'file' &&
       !isSyntheticText(p),
   )
+  if (!showAllParts.value && filtered.length > RECENT_PART_LIMIT) {
+    return filtered.slice(-RECENT_PART_LIMIT)
+  }
+  return filtered
+})
+
+const hiddenPartsCount = computed(() => {
+  if (showAllParts.value) return 0
+  const count = displayParts.value.filter(
+    (p) =>
+      p.type !== 'step-start' &&
+      p.type !== 'step-finish' &&
+      p.type !== 'patch' &&
+      p.type !== 'file' &&
+      !isSyntheticText(p),
+  ).length
+  return Math.max(0, count - RECENT_PART_LIMIT)
 })
 
 let stickToBottom = true
@@ -622,6 +648,27 @@ onBeforeUnmount(() => {
   }
 })
 
+const isArchived = computed(() => !!activeView.value?.session.raw?.time?.archived)
+
+function formatTokens(n: number | undefined | null): string {
+  if (n == null || n === 0) return '0'
+  if (n >= 1e6) return (n / 1e6).toFixed(1) + 'M'
+  if (n >= 1e3) return (n / 1e3).toFixed(1) + 'k'
+  return String(n)
+}
+
+const tokenSummary = computed(() => {
+  const raw = activeView.value?.session.raw
+  if (!raw?.tokens) return null
+  const { input, output, cache } = raw.tokens
+  const inputS = formatTokens(input)
+  const outputS = formatTokens(output)
+  const cacheRead = formatTokens(cache?.read)
+  const cacheWrite = formatTokens(cache?.write)
+  const cost = typeof raw.cost === 'number' ? '$' + raw.cost.toFixed(3) : '$0.00'
+  return { input: inputS, output: outputS, cacheRead, cacheWrite, cost }
+})
+
 function relativeAge(timestamp: number | null | undefined): string {
   if (!timestamp) return '—'
   return formatDuration(Math.max(0, now.value - timestamp))
@@ -779,7 +826,43 @@ void toolOutputText // keep template-friendly export
             {{ relativeAge(activeView.session.lastEventTime) }}
           </span>
 
+          <span
+            v-if="tokenSummary"
+            class="token-chip"
+            :title="`input / output / cache-read · cache-write · cost`"
+          >
+            <span class="token-in">{{ tokenSummary.input }}</span>
+            <span class="token-sep">·</span>
+            <span class="token-out">{{ tokenSummary.output }}</span>
+            <span v-if="tokenSummary.cacheRead !== '0'" class="token-sep">·</span>
+            <span v-if="tokenSummary.cacheRead !== '0'" class="token-cache">cR·{{ tokenSummary.cacheRead }}</span>
+            <span v-if="tokenSummary.cost !== '$0.00'" class="token-sep">·</span>
+            <span v-if="tokenSummary.cost !== '$0.00'" class="token-cost">{{ tokenSummary.cost }}</span>
+          </span>
+
           <div class="header-actions">
+            <button
+              v-if="archiveSession && isArchived"
+              type="button"
+              class="header-action-btn"
+              title="Unarchive session"
+              aria-label="Unarchive session"
+              :disabled="inFlight[`${activeView.session.id}:unarchive`]"
+              @click="unarchiveSession?.(activeView.session.id)"
+            >
+              <Undo2 :size="11" />
+            </button>
+            <button
+              v-else-if="archiveSession"
+              type="button"
+              class="header-action-btn"
+              title="Archive session"
+              aria-label="Archive session"
+              :disabled="inFlight[`${activeView.session.id}:archive`]"
+              @click="archiveSession?.(activeView.session.id)"
+            >
+              <Archive :size="11" />
+            </button>
             <button
               v-if="revertedMessageIds.size > 0"
               type="button"
@@ -861,6 +944,15 @@ void toolOutputText // keep template-friendly export
         class="tab-body message-stream"
         @scroll="onScroll"
       >
+        <button
+          v-if="!showAllParts && hiddenPartsCount > 0"
+          type="button"
+          class="stream-truncated-banner"
+          @click="showAllParts = true"
+        >
+          <ChevronUp :size="11" />
+          <span>{{ hiddenPartsCount }} older messages hidden — show all</span>
+        </button>
         <div v-if="visibleParts.length === 0" class="stream-empty">
           <p v-if="activeView.isParent" class="empty-hint">
             No messages yet. Subagent activity will appear as <code>subtask</code> parts arrive.
@@ -2797,4 +2889,46 @@ void toolOutputText // keep template-friendly export
 .spin {
   animation: spin 1s linear infinite;
 }
+
+/* ─── Stream truncated banner ─────────────────────────── */
+
+.stream-truncated-banner {
+  display: flex;
+  align-items: center;
+  gap: var(--space-6);
+  margin: var(--space-8) auto;
+  padding: var(--space-6) var(--space-12);
+  background: transparent;
+  border: 1px solid var(--border-variant);
+  border-radius: var(--radius-sm);
+  color: var(--text-placeholder);
+  font-family: var(--font-ui);
+  font-size: var(--font-size-small);
+  cursor: pointer;
+  transition: background var(--duration-fast) var(--ease-out-quint);
+}
+
+.stream-truncated-banner:hover {
+  background: var(--bg-hover);
+}
+
+/* ─── Token chip in header ────────────────────────────── */
+
+.token-chip {
+  font-family: var(--font-mono);
+  font-size: 10px;
+  color: var(--text-placeholder);
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-4);
+  padding: 2px var(--space-6);
+  background: var(--bg-element);
+  border-radius: var(--radius-xs);
+}
+
+.token-in  { color: var(--text-muted); }
+.token-out { color: var(--text-muted); }
+.token-cache { color: var(--info); }
+.token-cost  { color: var(--text-accent); }
+.token-sep   { color: var(--text-placeholder); opacity: 0.5; }
 </style>

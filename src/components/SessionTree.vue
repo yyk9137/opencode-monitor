@@ -4,11 +4,15 @@ import {
   ChevronRight,
   ChevronDown,
   Terminal,
+  Archive,
+  Undo2,
 } from 'lucide-vue-next'
 import { useSessionStore } from '@/stores/session'
+import { useSessionActions } from '@/composables/useSessionActions'
 import type { SessionNode } from '@/types'
 
 const store = useSessionStore()
+const { archiveSession, unarchiveSession } = useSessionActions()
 
 // ── Group top-level sessions by directory ──────────────────────────────
 // Only show top-level sessions (parentID === null). Child sessions are
@@ -81,6 +85,64 @@ function statusGlyph(session: SessionNode): 'running' | 'completed' | 'error' | 
   return session.inferredState
 }
 
+// ── Archive section ────────────────────────────────────────────────────
+
+const isArchiveExpanded = ref(false)
+
+function toggleArchive(): void {
+  isArchiveExpanded.value = !isArchiveExpanded.value
+}
+
+const archivedGrouped = computed<{ directory: string; sessions: SessionNode[] }[]>(() => {
+  const groups = new Map<string, SessionNode[]>()
+  for (const session of store.archivedTree) {
+    const list = groups.get(session.directory) ?? []
+    list.push(session)
+    groups.set(session.directory, list)
+  }
+  return Array.from(groups.entries())
+    .sort(([a], [b]) => a.localeCompare(b))
+    .map(([directory, sessions]) => ({
+      directory,
+      sessions: sessions.sort((a, b) => a.title.localeCompare(b.title)),
+    }))
+})
+
+const archivedFlattened = computed<SessionNode[]>(() => {
+  // Flat list when no grouping needed — but keep grouped for consistency with active tree
+  return store.archivedTree
+})
+
+const archivedTotal = computed(() => store.archivedTree.length)
+
+function archiveFromTree(id: string): void {
+  archiveSession(id)
+}
+
+function unarchiveFromTree(id: string): void {
+  unarchiveSession(id)
+}
+
+function isRowArchived(id: string): boolean {
+  return !!store.sessions.get(id)?.raw?.time?.archived
+}
+
+// ── Token display helper ───────────────────────────────────────────────
+
+function formatTokens(n: number | undefined | null): string {
+  if (!n) return '0'
+  if (n >= 1_000_000) return (n / 1_000_000).toFixed(1).replace(/\.0$/, '') + 'M'
+  if (n >= 1_000) return (n / 1_000).toFixed(1).replace(/\.0$/, '') + 'k'
+  return String(n)
+}
+
+function tokenTotal(session: SessionNode): string {
+  const t = session.raw?.tokens
+  if (!t) return '0'
+  const total = (t.input || 0) + (t.output || 0) + (t.reasoning || 0) + (t.cache?.read || 0) + (t.cache?.write || 0)
+  return formatTokens(total)
+}
+
 </script>
 
 <template>
@@ -145,23 +207,83 @@ function statusGlyph(session: SessionNode): 'running' | 'completed' | 'error' | 
                 <span class="session-title" :title="session.title">
                   {{ session.title }}
                 </span>
-                <span
-                  v-if="session.children.length > 0"
-                  class="child-count clickable"
-                  role="button"
-                  tabindex="0"
-                  :title="`${session.children.length} subagents — click to view list`"
-                  @click.stop="store.openChildList(session.id)"
-                  @keydown.enter.stop="store.openChildList(session.id)"
-                >
-                  {{ session.children.length }}
-                </span>
+                  <span
+                    v-if="session.children.length > 0"
+                    class="child-count clickable"
+                    role="button"
+                    tabindex="0"
+                    :title="`${session.children.length} subagents — click to view list`"
+                    @click.stop="store.openChildList(session.id)"
+                    @keydown.enter.stop="store.openChildList(session.id)"
+                  >
+                    {{ session.children.length }}
+                  </span>
+                  <button
+                    v-if="!isRowArchived(session.id)"
+                    type="button"
+                    class="row-action"
+                    title="Archive"
+                    aria-label="Archive session"
+                    @click.stop="archiveFromTree(session.id)"
+                    @keydown.enter.stop="archiveFromTree(session.id)"
+                  >
+                    <Archive :size="11" />
+                  </button>
+                  <span
+                    class="row-tokens"
+                    :title="`tokens in/out/cache`"
+                  >
+                    {{ tokenTotal(session) }}
+                  </span>
               </button>
             </div>
           </li>
         </ul>
       </li>
     </ul>
+
+    <section v-if="archivedGrouped.length > 0" class="archive-section">
+      <button
+        type="button"
+        class="group-header archive-header"
+        :aria-expanded="isArchiveExpanded"
+        @click="toggleArchive"
+      >
+        <component
+          :is="isArchiveExpanded ? ChevronDown : ChevronRight"
+          :size="12"
+          class="group-chevron"
+        />
+        <span class="group-name">Archived</span>
+        <span class="group-meta">{{ archivedTotal }}</span>
+      </button>
+      <ul v-show="isArchiveExpanded" class="session-list" role="group">
+        <li v-for="session in archivedFlattened" :key="session.id" class="session-row">
+          <div class="session-entry">
+            <button
+              type="button"
+              class="session-button archived-row"
+              :class="{ selected: store.activeTabId === session.id }"
+              @click="openSessionTab(session.id)"
+            >
+              <span class="status-dot" data-state="archived" aria-label="archived" />
+              <Terminal :size="12" class="agent-icon" />
+              <span class="session-title" :title="session.title">{{ session.title }}</span>
+              <button
+                type="button"
+                class="row-action"
+                title="Unarchive"
+                aria-label="Unarchive session"
+                @click.stop="unarchiveFromTree(session.id)"
+                @keydown.enter.stop="unarchiveFromTree(session.id)"
+              >
+                <Undo2 :size="11" />
+              </button>
+            </button>
+          </div>
+        </li>
+      </ul>
+    </section>
   </nav>
 </template>
 
@@ -446,6 +568,76 @@ function statusGlyph(session: SessionNode): 'running' | 'completed' | 'error' | 
 .status-dot[data-state='unknown'] {
   background: var(--text-placeholder);
   opacity: 0.4;
+}
+
+.status-dot[data-state='archived'] {
+  background: var(--text-placeholder);
+  opacity: 0.4;
+}
+
+/* ── Row action buttons (archive/unarchive) ─────────────────────────── */
+
+.row-action {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 16px;
+  height: 16px;
+  flex-shrink: 0;
+  margin-left: var(--space-6);
+  background: transparent;
+  border: none;
+  color: var(--text-placeholder);
+  border-radius: var(--radius-xs);
+  opacity: 0;
+  cursor: pointer;
+  transition:
+    opacity var(--duration-fast) var(--ease-out-quint),
+    background var(--duration-fast) var(--ease-out-quint),
+    color var(--duration-fast) var(--ease-out-quint);
+  padding: 0;
+}
+
+.session-button:hover .row-action {
+  opacity: 0.7;
+}
+
+.row-action:hover {
+  opacity: 1;
+  background: var(--bg-hover);
+  color: var(--text-primary);
+}
+
+.archived-row {
+  opacity: 0.6;
+}
+
+.archive-header {
+  color: var(--text-placeholder);
+}
+
+.archive-section {
+  margin-top: var(--space-12);
+  border-top: 1px solid var(--border-variant);
+  padding-top: var(--space-8);
+}
+
+/* ── Token chip ─────────────────────────────────────────────────────── */
+
+.row-tokens {
+  font-family: var(--font-mono);
+  font-size: 10px;
+  color: var(--text-placeholder);
+  margin-left: auto;
+  padding-left: var(--space-6);
+  opacity: 0;
+  transition: opacity var(--duration-fast) var(--ease-out-quint);
+  flex-shrink: 0;
+}
+
+.session-button:hover .row-tokens,
+.session-button.selected .row-tokens {
+  opacity: 0.7;
 }
 
 @keyframes pulse-dot {

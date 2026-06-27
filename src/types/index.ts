@@ -8,7 +8,7 @@
 export interface SessionTime {
   created: string  // ISO timestamp (DateTimeUtcFromMillis)
   updated: string  // ISO timestamp (DateTimeUtcFromMillis)
-  archived?: string
+  archived?: number | string  // v2 returns epoch-ms number; some legacy paths may return ISO string
 }
 
 export interface SessionLocation {

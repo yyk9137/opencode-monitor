@@ -21,6 +21,8 @@ export interface UseSessionActionsReturn {
   fork: (sessionId: string, messageID?: string) => Promise<void>
   viewDiff: (sessionId: string, messageID?: string) => Promise<void>
   refreshParts: (sessionId: string) => Promise<void>
+  archiveSession: (sessionId: string) => Promise<void>
+  unarchiveSession: (sessionId: string) => Promise<void>
 }
 
 export function useSessionActions(): UseSessionActionsReturn {
@@ -132,6 +134,38 @@ export function useSessionActions(): UseSessionActionsReturn {
     }
   }
 
+  async function archiveSession(sessionId: string): Promise<void> {
+    const key = `${sessionId}:archive`
+    if (inFlight[key]) return
+    inFlight[key] = true
+    try {
+      const result = await store.archiveSession(sessionId)
+      if (result.ok) {
+        toast('Session archived', 'success')
+      } else {
+        toast('Failed to archive session', 'error')
+      }
+    } finally {
+      inFlight[key] = false
+    }
+  }
+
+  async function unarchiveSession(sessionId: string): Promise<void> {
+    const key = `${sessionId}:unarchive`
+    if (inFlight[key]) return
+    inFlight[key] = true
+    try {
+      const result = await store.unarchiveSession(sessionId)
+      if (result.ok) {
+        toast('Session restored', 'success')
+      } else {
+        toast('Failed to restore session', 'error')
+      }
+    } finally {
+      inFlight[key] = false
+    }
+  }
+
   return {
     inFlight,
     lastError,
@@ -143,5 +177,7 @@ export function useSessionActions(): UseSessionActionsReturn {
     fork,
     viewDiff,
     refreshParts,
+    archiveSession,
+    unarchiveSession,
   }
 }

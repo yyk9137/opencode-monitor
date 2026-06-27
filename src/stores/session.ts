@@ -414,16 +414,14 @@ export const useSessionStore = defineStore('session', () => {
 
   // ── Computed ───────────────────────────────────────────────────────────
 
-  const tree = computed<SessionNode[]>(() => {
-    const all = Array.from(sessions.value.values())
-    // No cwd filtering — show all sessions from all instances
+  /** Helper: rebuild tree hierarchy from a filtered set of sessions */
+  function computeTree(sessionsIter: IterableIterator<SessionNode>): SessionNode[] {
+    const all = Array.from(sessionsIter)
     const childrenMap = new Map<string, SessionNode[]>()
     const topLevel: SessionNode[] = []
 
     for (const session of all) {
       const node: SessionNode = { ...session, children: [] }
-      // API returns parentID as empty string "" for top-level sessions, not null.
-      // Treat both null and "" as top-level.
       if (!session.parentID) {
         topLevel.push(node)
       } else {
@@ -439,9 +437,6 @@ export const useSessionStore = defineStore('session', () => {
       node.children = childrenMap.get(node.id) ?? []
     }
 
-    // Promote orphaned children to top-level — their parent session
-    // might not be in the full set (e.g. parent is from another project,
-    // or was truncated by the server's session limit).
     const topLevelIds = new Set(topLevel.map(n => n.id))
     for (const [parentId, children] of childrenMap) {
       if (!topLevelIds.has(parentId)) {
@@ -450,6 +445,28 @@ export const useSessionStore = defineStore('session', () => {
     }
 
     return topLevel
+  }
+
+  const tree = computed<SessionNode[]>(() => {
+    // Exclude archived sessions from the active tree
+    const all = sessions.value.values()
+    const filtered: SessionNode[] = []
+    for (const session of all) {
+      if (session.raw?.time?.archived) continue
+      filtered.push(session)
+    }
+    return computeTree(filtered[Symbol.iterator]())
+  })
+
+  /** Archived top-level sessions (no parentID) whose raw.time.archived is truthy */
+  const archivedTree = computed<SessionNode[]>(() => {
+    const archived: SessionNode[] = []
+    for (const session of sessions.value.values()) {
+      if (!session.parentID && session.raw?.time?.archived) {
+        archived.push({ ...session, children: [] })
+      }
+    }
+    return archived.sort((a, b) => (b.raw?.time?.archived as number ?? 0) - (a.raw?.time?.archived as number ?? 0))
   })
 
   const stuckSessions = computed<SessionNode[]>(() => {
@@ -583,6 +600,73 @@ export const useSessionStore = defineStore('session', () => {
     }
   }
 
+  // ── Archive actions ──────────────────────────────────────────────────
+
+  async function archiveSession(sessionId: string): Promise<{ ok: boolean }> {
+    const node = sessions.value.get(sessionId)
+    const url = node?.instanceUrl ?? baseUrl.value
+    try {
+      const response = await fetch(`${url}/session/${sessionId}`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ time: { archived: Date.now() } }),
+      })
+      if (!response.ok) return { ok: false }
+      // Optimistically update local state
+      const map = new Map(sessions.value)
+      const existing = map.get(sessionId)
+      if (existing) {
+        map.set(sessionId, {
+          ...existing,
+          raw: { ...existing.raw, time: { ...existing.raw.time, archived: Date.now() } },
+          lastEventTime: Date.now(),
+          lastEventType: 'archive',
+        })
+        sessions.value = map
+      }
+      return { ok: true }
+    } catch {
+      return { ok: false }
+    }
+  }
+
+  async function unarchiveSession(sessionId: string): Promise<{ ok: boolean }> {
+    const node = sessions.value.get(sessionId)
+    const url = node?.instanceUrl ?? baseUrl.value
+    try {
+      const response = await fetch(`${url}/session/${sessionId}`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ time: { archived: null } }),
+      })
+      if (!response.ok) {
+        // Fallback: some servers reject null; retry with 0
+        const retry = await fetch(`${url}/session/${sessionId}`, {
+          method: 'PATCH',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ time: { archived: 0 } }),
+        })
+        if (!retry.ok) return { ok: false }
+      }
+      const map = new Map(sessions.value)
+      const existing = map.get(sessionId)
+      if (existing) {
+        const newTime = { ...existing.raw.time }
+        delete (newTime as { archived?: number | string }).archived
+        map.set(sessionId, {
+          ...existing,
+          raw: { ...existing.raw, time: newTime },
+          lastEventTime: Date.now(),
+          lastEventType: 'unarchive',
+        })
+        sessions.value = map
+      }
+      return { ok: true }
+    } catch {
+      return { ok: false }
+    }
+  }
+
   return {
     // state
     sessions,
@@ -618,8 +702,11 @@ export const useSessionStore = defineStore('session', () => {
     abortSession,
     forkSession,
     getSessionDiff,
+    archiveSession,
+    unarchiveSession,
     // computed
     tree,
+    archivedTree,
     stuckSessions,
   }
 })

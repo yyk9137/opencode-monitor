@@ -26,6 +26,7 @@ interface ConnState {
   es: EventSource | null
   timer: ReturnType<typeof setTimeout> | null
   attempts: number
+  markedConnected: boolean  // tracks whether we've fired setInstanceConnected(true)
 }
 
 export function useEventStream(): UseEventStreamReturn {
@@ -109,6 +110,55 @@ export function useEventStream(): UseEventStreamReturn {
           // Next reconcile cycle retries
         }
       }
+
+      // Re-verify 'running' sessions on this instance whose lastEventTime is
+      // older than 30s (i.e. not actively streaming). Catches completions
+      // during a disconnect window where no SSE event arrived.
+      const thirtySecAgo = Date.now() - 30000
+      for (const sessionInfo of body.data) {
+        const node = store.sessions.get(sessionInfo.id)
+        if (!node || node.inferredState !== 'running' || node.lastEventTime > thirtySecAgo) continue
+        try {
+          const msgResponse = await fetch(`${url}/session/${sessionInfo.id}/message`)
+          if (!msgResponse.ok) continue
+          const messages: Array<{
+            info: { time?: { created?: string | number; updated?: string | number } }
+            parts: Array<{ type: string; reason?: string; state?: { status?: string } }>
+          }> = await msgResponse.json()
+
+          let lastFinishReason: string | null = null
+          let hasRunningTool = false
+          for (const msg of messages) {
+            for (const part of msg.parts) {
+              if (part.type === 'step-finish' && part.reason) {
+                lastFinishReason = part.reason
+              }
+              if (part.type === 'tool' && part.state?.status === 'running') {
+                hasRunningTool = true
+              }
+            }
+          }
+
+          let newState: 'running' | 'completed' | null = null
+          if (hasRunningTool) {
+            newState = 'running'
+          } else if (lastFinishReason && lastFinishReason !== 'tool-calls') {
+            newState = 'completed'
+          } else if (!lastFinishReason) {
+            const created = sessionInfo.time.created
+            const updated = sessionInfo.time.updated
+            if (updated && created && updated > created) {
+              newState = 'completed'
+            }
+          }
+
+          if (newState && newState !== node.inferredState) {
+            store.backfillState(sessionInfo.id, newState, lastFinishReason as FinishReason)
+          }
+        } catch {
+          // One failure shouldn't abort the loop
+        }
+      }
     } catch {
       // Silently fail — next reconnect cycle retries
     }
@@ -150,18 +200,20 @@ export function useEventStream(): UseEventStreamReturn {
           break
         }
         case 'session.status': {
-          // Session status change — may indicate abort, pause, or resume.
-          // Map known statuses to inferred states.
-          const d = data as { sessionID?: string; status?: string }
-          if (d.sessionID) {
-            const status = d.status ?? ''
-            if (status === 'idle' || status === 'completed') {
+          // Session status event carries status as an OBJECT with .type, not a string.
+          // Fix: use object-shape parsing instead of string comparison.
+          const d = data as { sessionID?: string; status?: { type?: string } }
+          if (d.sessionID && d.status?.type) {
+            const t = d.status.type
+            if (t === 'idle') {
               store.backfillState(d.sessionID, 'completed', null)
-            } else if (status === 'error' || status === 'aborted') {
-              store.backfillState(d.sessionID, 'error', null)
+            } else if (t === 'busy' || t === 'retry') {
+              // busy/retry means the session is actively working — ensure running
+              const node = store.sessions.get(d.sessionID)
+              if (node && (node.inferredState === 'unknown' || node.inferredState === 'completed')) {
+                store.backfillState(d.sessionID, 'running', null)
+              }
             }
-            // 'running' status is handled by message.part.updated events
-            // which already set inferredState to 'running'
           }
           break
         }
@@ -208,7 +260,7 @@ export function useEventStream(): UseEventStreamReturn {
     if (prev?.es) prev.es.close()
     if (prev?.timer) clearTimeout(prev.timer)
 
-    const state: ConnState = { url, es: null, timer: null, attempts: prev?.attempts ?? 0 }
+    const state: ConnState = { url, es: null, timer: null, attempts: prev?.attempts ?? 0, markedConnected: false }
     connections.set(url, state)
     store.setInstanceConnected(url, false)
 
@@ -218,12 +270,19 @@ export function useEventStream(): UseEventStreamReturn {
 
       es.onopen = () => {
         state.attempts = 0
+        state.markedConnected = true
         store.setInstanceConnected(url, true)
         updateAggregateStatus()
         reconcileInstance(url)
       }
 
       es.onmessage = (event) => {
+        // Fix: if onopen didn't fire reliably, mark connected on first message
+        if (!state.markedConnected) {
+          state.markedConnected = true
+          store.setInstanceConnected(url, true)
+          updateAggregateStatus()
+        }
         handleEvent(event, url)
       }
 

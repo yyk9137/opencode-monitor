@@ -33,6 +33,11 @@ interface UseSessionMessagesReturn {
   fetchParts: (sessionId: string) => Promise<MessagePart[]>
 }
 
+// Bound the number of backfilled parts to limit memory + dedup cost.
+// Child-state inference for <task> tags already ran at bootstrap,
+// so truncating historical parts is safe for subagent list accuracy.
+const BACKFILL_PART_LIMIT = 80
+
 export function useSessionMessages(): UseSessionMessagesReturn {
   const store = useSessionStore()
 
@@ -47,6 +52,11 @@ export function useSessionMessages(): UseSessionMessagesReturn {
       for (const part of msg.parts) {
         parts.push(part as unknown as MessagePart)
       }
+    }
+    // Bounds memory + dedup cost for long sessions.
+    // Child-state inference for <task> tags already ran at bootstrap.
+    if (parts.length > BACKFILL_PART_LIMIT) {
+      return parts.slice(-BACKFILL_PART_LIMIT)
     }
     return parts
   }
