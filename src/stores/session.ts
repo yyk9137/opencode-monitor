@@ -447,12 +447,34 @@ export const useSessionStore = defineStore('session', () => {
     return topLevel
   }
 
+  function hasChildren(sessionId: string): boolean {
+    return Array.from(sessions.value.values()).some(s => s.parentID === sessionId)
+  }
+
+  function isPlaceholderTitle(title: string): boolean {
+    return !title || /^[a-z0-9]{8}$/.test(title)
+  }
+
+  function isEmptySession(session: SessionNode): boolean {
+    if (hasChildren(session.id)) return false // parent containers for subagents
+    if (session.inferredState !== 'unknown') return false
+    if (session.messages.length > 0) return false
+    // Placeholder title = just the session ID prefix (8 hex chars)
+    const placeholder = isPlaceholderTitle(session.title)
+    // Also check cost/tokens as extra signal (0 cost = no LLM call happened)
+    const zeroCost = (session.raw?.cost ?? 0) === 0
+    const zeroTokens = (session.raw?.tokens?.input ?? 0) === 0 && (session.raw?.tokens?.output ?? 0) === 0
+    return placeholder || (zeroCost && zeroTokens)
+  }
+
   const tree = computed<SessionNode[]>(() => {
-    // Exclude archived sessions from the active tree
+    // Exclude archived sessions and empty "untitled" sessions (user created a
+    // thread in Zed but never sent a prompt) from the active tree.
     const all = sessions.value.values()
     const filtered: SessionNode[] = []
     for (const session of all) {
       if (session.raw?.time?.archived) continue
+      if (isEmptySession(session)) continue
       filtered.push(session)
     }
     return computeTree(filtered[Symbol.iterator]())
@@ -667,6 +689,58 @@ export const useSessionStore = defineStore('session', () => {
     }
   }
 
+  /** Periodic archive-state sync: fetch active session list and compare
+   *  raw.time.archived. If the server reports a session is archived but our
+   *  local store doesn't have it set (or vice versa), update the local node.
+   *  Called every ~30s from useStuckDetection's interval. */
+  async function syncArchivedStates(): Promise<void> {
+    // Gather all instance URLs we know about
+    const urls = instances.value.map(i => i.url)
+    if (urls.length === 0) return
+    const map = new Map(sessions.value)
+    let changed = false
+
+    for (const url of urls) {
+      try {
+        // Fetch the default list (excludes archived by default on the server)
+        const response = await fetch(`${url}/api/session?limit=500`)
+        if (!response.ok) continue
+        const body = await response.json() as SessionListResponse
+        const serverIds = new Set(body.data.map(s => s.id))
+
+        // For each local session tagged to this instance that has archived set,
+        // check if it still appears in the non-archived list. If it does NOT,
+        // the server might have archived it (or deleted it).
+        for (const [id, node] of map) {
+          if (node.instanceUrl !== url) continue
+          if (node.raw?.time?.archived) continue // already archived locally
+
+          // If the session is missing from the active list AND we can confirm
+          // it exists on the server (by checking archived list), mark it archived.
+          if (!serverIds.has(id) && node.inferredState !== 'error') {
+            try {
+              const check = await fetch(`${url}/api/session?archived=true&limit=500`)
+              if (!check.ok) continue
+              const archBody = await check.json() as SessionListResponse
+              const archSession = archBody.data.find(s => s.id === id)
+              if (archSession?.time?.archived) {
+                map.set(id, {
+                  ...node,
+                  raw: { ...node.raw, time: { ...node.raw.time, archived: archSession.time.archived } },
+                  lastEventTime: Date.now(),
+                  lastEventType: 'sync-archived',
+                })
+                changed = true
+              }
+            } catch { /* skip */ }
+          }
+        }
+      } catch { /* skip instance */ }
+    }
+
+    if (changed) sessions.value = map
+  }
+
   return {
     // state
     sessions,
@@ -704,6 +778,7 @@ export const useSessionStore = defineStore('session', () => {
     getSessionDiff,
     archiveSession,
     unarchiveSession,
+    syncArchivedStates,
     // computed
     tree,
     archivedTree,

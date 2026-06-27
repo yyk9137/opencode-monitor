@@ -104,6 +104,9 @@ export function useStuckDetection(
     }
   }
 
+  // Rate-limited archive sync: run every ~30s (every 3rd stuck-check cycle)
+  let archiveSyncCounter = 0
+
   async function checkAndUpdateAlerts(): Promise<void> {
     const now = Date.now()
     const alerts: StuckAlert[] = []
@@ -169,6 +172,12 @@ export function useStuckDetection(
     }
 
     store.stuckAlerts = alerts as typeof store.stuckAlerts
+
+    // Periodically sync archive state from server (SSE may miss archive updates)
+    if (++archiveSyncCounter >= 3) {
+      archiveSyncCounter = 0
+      store.syncArchivedStates().catch(() => {})
+    }
   }
 
   function startWatching(): void {
