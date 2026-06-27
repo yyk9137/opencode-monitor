@@ -459,16 +459,39 @@ export const useSessionStore = defineStore('session', () => {
     return session.inferredState === 'unknown' && session.messages.length === 0
   }
 
-  const tree = computed<SessionNode[]>(() => {
-    // Build the set of project directories we care about (from connected instances).
-    // If any instance has a known projectDir, filter to only those directories.
-    // If NO instance has project info (all manually added), show everything.
-    const knownDirs = new Set(
+  /** Get the set of project directories to show in the tree.
+   *  Priority: instance.projectDir (from /project/current probe) →
+   *  inferred from sessions (most common directory among connected instances). */
+  function getKnownDirs(): { dirs: Set<string>; active: boolean } {
+    // Try instance.projectDir first
+    const fromInstances = new Set(
       instances.value
         .map(i => i.projectDir)
         .filter((d): d is string => !!d)
     )
-    const hasKnownDirs = knownDirs.size > 0
+    if (fromInstances.size > 0) return { dirs: fromInstances, active: true }
+
+    // Fallback: infer from sessions tagged to connected instances
+    const connectedUrls = new Set(
+      instances.value.filter(i => i.connected).map(i => i.url)
+    )
+    if (connectedUrls.size === 0) return { dirs: new Set(), active: false }
+
+    const dirCounts = new Map<string, number>()
+    for (const session of sessions.value.values()) {
+      if (!connectedUrls.has(session.instanceUrl)) continue
+      if (session.raw?.time?.archived) continue
+      if (!session.directory) continue
+      dirCounts.set(session.directory, (dirCounts.get(session.directory) ?? 0) + 1)
+    }
+    if (dirCounts.size === 0) return { dirs: new Set(), active: false }
+
+    // Return all directories that have sessions (from connected instances)
+    return { dirs: new Set(dirCounts.keys()), active: true }
+  }
+
+  const tree = computed<SessionNode[]>(() => {
+    const { dirs: knownDirs, active: hasKnownDirs } = getKnownDirs()
 
     const all = sessions.value.values()
     const filtered: SessionNode[] = []
@@ -485,12 +508,7 @@ export const useSessionStore = defineStore('session', () => {
   /** Archived top-level sessions (no parentID) whose raw.time.archived is truthy.
    *  Filtered to known project directories (same as tree). */
   const archivedTree = computed<SessionNode[]>(() => {
-    const knownDirs = new Set(
-      instances.value
-        .map(i => i.projectDir)
-        .filter((d): d is string => !!d)
-    )
-    const hasKnownDirs = knownDirs.size > 0
+    const { dirs: knownDirs, active: hasKnownDirs } = getKnownDirs()
     const archived: SessionNode[] = []
     for (const session of sessions.value.values()) {
       if (!session.parentID && session.raw?.time?.archived) {
