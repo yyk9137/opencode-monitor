@@ -82,20 +82,7 @@ export function useSessionBootstrap(): UseSessionBootstrapReturn {
         }
       }
 
-      // Step 3: Also fetch archived sessions (they're excluded from the default list)
-      try {
-        const archResponse = await fetch(`${url}/api/session?archived=true&limit=500`)
-        if (archResponse.ok) {
-          const archBody: SessionListResponse = await archResponse.json()
-          for (const sessionInfo of archBody.data) {
-            allSessions.push({ sessionInfo, instanceUrl: url })
-          }
-        }
-      } catch {
-        // Archived fetch is best-effort
-      }
-
-      // Step 4: Add all sessions to store
+      // Step 3: Add all sessions to store
       for (const { sessionInfo, instanceUrl } of allSessions) {
         store.addSession(sessionInfo, instanceUrl)
       }

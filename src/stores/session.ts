@@ -460,23 +460,41 @@ export const useSessionStore = defineStore('session', () => {
   }
 
   const tree = computed<SessionNode[]>(() => {
-    // Exclude archived sessions and empty "untitled" sessions (user created a
-    // thread in Zed but never sent a prompt) from the active tree.
+    // Build the set of project directories we care about (from connected instances).
+    // If any instance has a known projectDir, filter to only those directories.
+    // If NO instance has project info (all manually added), show everything.
+    const knownDirs = new Set(
+      instances.value
+        .map(i => i.projectDir)
+        .filter((d): d is string => !!d)
+    )
+    const hasKnownDirs = knownDirs.size > 0
+
     const all = sessions.value.values()
     const filtered: SessionNode[] = []
     for (const session of all) {
       if (session.raw?.time?.archived) continue
       if (isEmptySession(session)) continue
+      // If we know which projects we're monitoring, hide sessions from other projects
+      if (hasKnownDirs && session.directory && !knownDirs.has(session.directory)) continue
       filtered.push(session)
     }
     return computeTree(filtered[Symbol.iterator]())
   })
 
-  /** Archived top-level sessions (no parentID) whose raw.time.archived is truthy */
+  /** Archived top-level sessions (no parentID) whose raw.time.archived is truthy.
+   *  Filtered to known project directories (same as tree). */
   const archivedTree = computed<SessionNode[]>(() => {
+    const knownDirs = new Set(
+      instances.value
+        .map(i => i.projectDir)
+        .filter((d): d is string => !!d)
+    )
+    const hasKnownDirs = knownDirs.size > 0
     const archived: SessionNode[] = []
     for (const session of sessions.value.values()) {
       if (!session.parentID && session.raw?.time?.archived) {
+        if (hasKnownDirs && session.directory && !knownDirs.has(session.directory)) continue
         archived.push({ ...session, children: [] })
       }
     }
