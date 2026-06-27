@@ -33,14 +33,39 @@ export function useSessionBootstrap(): UseSessionBootstrapReturn {
 
   async function bootstrapInstance(url: string): Promise<void> {
     try {
-      // Step 1: Fetch sessions for the current workspace only.
-      // Don't enumerate /project and fetch per-directory — that pulls sessions
-      // from ALL projects on the server, causing the sidebar to show 27 sessions
-      // when Zed shows 9. Match Zed's behavior: only the current workspace.
+      // Step 0: Get the current project directory from the server.
+      // /api/session without ?directory returns ALL projects' sessions.
+      // We need the current directory to filter like Zed does.
+      let projectDir: string | undefined
+      try {
+        const projResp = await fetch(`${url}/project/current`, { signal: AbortSignal.timeout(3000) })
+        if (projResp.ok) {
+          const projBody = await projResp.json() as { data?: { directory?: string }; directory?: string }
+          projectDir = projBody.data?.directory ?? projBody.directory ?? undefined
+        }
+      } catch {
+        // /project/current unavailable — fall through
+      }
+
+      // Update the instance's projectDir so the tree filter can use it
+      if (projectDir) {
+        const inst = store.instances.find(i => i.url === url)
+        if (inst && !inst.projectDir) {
+          store.setInstances(store.instances.map(i =>
+            i.url === url ? { ...i, projectDir } : i
+          ))
+        }
+      }
+
+      // Step 1: Fetch sessions — use directory filter if we know the project
       const allSessions: { sessionInfo: SessionV2Info; instanceUrl: string }[] = []
 
+      const sessionUrl = projectDir
+        ? `${url}/api/session?directory=${encodeURIComponent(projectDir)}&limit=500`
+        : `${url}/api/session?limit=500`
+
       try {
-        const response = await fetch(`${url}/api/session?limit=500`)
+        const response = await fetch(sessionUrl)
         if (response.ok) {
           const body: SessionListResponse = await response.json()
           for (const sessionInfo of body.data) {

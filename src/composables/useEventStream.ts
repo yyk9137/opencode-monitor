@@ -53,7 +53,13 @@ export function useEventStream(): UseEventStreamReturn {
   // handshake completes. Catches up on sessions created before we connected.
   async function reconcileInstance(url: string): Promise<void> {
     try {
-      const response = await fetch(`${url}/api/session`)
+      // Use directory filter if we know the project dir for this instance
+      const inst = store.instances.find(i => i.url === url)
+      const dir = inst?.projectDir
+      const sessionUrl = dir
+        ? `${url}/api/session?directory=${encodeURIComponent(dir)}`
+        : `${url}/api/session`
+      const response = await fetch(sessionUrl)
       if (!response.ok) throw new Error(`HTTP ${response.status}`)
       const body: SessionListResponse = await response.json()
 
