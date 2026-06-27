@@ -33,27 +33,12 @@ export function useSessionBootstrap(): UseSessionBootstrapReturn {
 
   async function bootstrapInstance(url: string): Promise<void> {
     try {
-      // Step 1: Get all projects for this instance
-      // OpenCode's /api/session only returns sessions for the current workspace.
-      // We need to enumerate all projects and fetch sessions for each.
-      let directories: string[] = []
-      try {
-        const projectResponse = await fetch(`${url}/project`)
-        if (projectResponse.ok) {
-          const projects = await projectResponse.json() as Array<{ worktree: string }>
-          directories = projects
-            .map(p => p.worktree)
-            .filter(w => w && w !== '/' && !w.startsWith('/'))
-        }
-      } catch {
-        // /project endpoint not available — fall through to default fetch
-      }
-
-      // Step 2: Fetch sessions for each project directory + default (no filter)
+      // Step 1: Fetch sessions for the current workspace only.
+      // Don't enumerate /project and fetch per-directory — that pulls sessions
+      // from ALL projects on the server, causing the sidebar to show 27 sessions
+      // when Zed shows 9. Match Zed's behavior: only the current workspace.
       const allSessions: { sessionInfo: SessionV2Info; instanceUrl: string }[] = []
 
-      // Always fetch without filter (gets default workspace sessions)
-      // Pass limit=500 to avoid server's DefaultSessionsLimit=50 cap
       try {
         const response = await fetch(`${url}/api/session?limit=500`)
         if (response.ok) {
@@ -63,26 +48,10 @@ export function useSessionBootstrap(): UseSessionBootstrapReturn {
           }
         }
       } catch {
-        // Skip default fetch
+        // Skip — other instances may still be reachable
       }
 
-      // Also fetch for each project directory
-      for (const dir of directories) {
-        try {
-          const encoded = encodeURIComponent(dir)
-          const response = await fetch(`${url}/api/session?directory=${encoded}&limit=500`)
-          if (response.ok) {
-            const body: SessionListResponse = await response.json()
-            for (const sessionInfo of body.data) {
-              allSessions.push({ sessionInfo, instanceUrl: url })
-            }
-          }
-        } catch {
-          // Skip this directory
-        }
-      }
-
-      // Step 3: Add all sessions to store
+      // Step 2: Add all sessions to store
       for (const { sessionInfo, instanceUrl } of allSessions) {
         store.addSession(sessionInfo, instanceUrl)
       }

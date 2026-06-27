@@ -245,13 +245,14 @@ export const useSessionStore = defineStore('session', () => {
   // ── Multi-instance actions ────────────────────────────────────────────
 
   function setInstances(next: InstanceConnection[]): void {
-    // Preserve any current 'connected' state for entries whose URL matches.
-    const prevConnected = new Map(
-      instances.value.map((i) => [i.url, i.connected] as const),
+    // Preserve connected state AND projectDir from previous scan
+    const prev = new Map(
+      instances.value.map((i) => [i.url, i] as const),
     )
     instances.value = next.map((i) => ({
       ...i,
-      connected: prevConnected.get(i.url) ?? i.connected,
+      connected: prev.get(i.url)?.connected ?? i.connected,
+      projectDir: i.projectDir ?? prev.get(i.url)?.projectDir,
     }))
   }
 
@@ -453,41 +454,58 @@ export const useSessionStore = defineStore('session', () => {
 
   function isEmptySession(session: SessionNode): boolean {
     if (hasChildren(session.id)) return false
-    // Hide any session where the monitor has never received events AND has
-    // no messages — the user created a thread in Zed but never sent a prompt,
-    // or the session is otherwise inert.
-    return session.inferredState === 'unknown' && session.messages.length === 0
+    if (session.inferredState !== 'unknown') return false
+    if (session.messages.length > 0) return false
+    // Server says this session was updated after creation → user interacted with it
+    const t = session.raw?.time
+    if (t?.updated && t?.created && t.updated !== t.created) return false
+    return true
+  }
+
+  /** Normalize a directory path for comparison (lowercase, forward slashes, no trailing slash) */
+  function pathKey(dir: string): string {
+    return dir.replace(/\\/g, '/').replace(/\/+$/, '').toLowerCase()
   }
 
   /** Get the set of project directories to show in the tree.
    *  Priority: instance.projectDir (from /project/current probe) →
    *  inferred from sessions (most common directory among connected instances). */
-  function getKnownDirs(): { dirs: Set<string>; active: boolean } {
+  function getKnownDirs(): { dirs: Map<string, string>; active: boolean } {
     // Try instance.projectDir first
-    const fromInstances = new Set(
-      instances.value
-        .map(i => i.projectDir)
-        .filter((d): d is string => !!d)
-    )
+    const fromInstances = new Map<string, string>() // pathKey → original
+    for (const inst of instances.value) {
+      if (inst.projectDir) {
+        fromInstances.set(pathKey(inst.projectDir), inst.projectDir)
+      }
+    }
     if (fromInstances.size > 0) return { dirs: fromInstances, active: true }
 
-    // Fallback: infer from sessions tagged to connected instances
+    // Fallback: infer the most common directory from sessions of connected instances
     const connectedUrls = new Set(
       instances.value.filter(i => i.connected).map(i => i.url)
     )
-    if (connectedUrls.size === 0) return { dirs: new Set(), active: false }
+    if (connectedUrls.size === 0) return { dirs: new Map(), active: false }
 
-    const dirCounts = new Map<string, number>()
+    const dirCounts = new Map<string, { key: string; count: number }>()
     for (const session of sessions.value.values()) {
       if (!connectedUrls.has(session.instanceUrl)) continue
       if (session.raw?.time?.archived) continue
       if (!session.directory) continue
-      dirCounts.set(session.directory, (dirCounts.get(session.directory) ?? 0) + 1)
+      const key = pathKey(session.directory)
+      const existing = dirCounts.get(key)
+      if (existing) {
+        existing.count++
+      } else {
+        dirCounts.set(key, { key: session.directory, count: 1 })
+      }
     }
-    if (dirCounts.size === 0) return { dirs: new Set(), active: false }
+    if (dirCounts.size === 0) return { dirs: new Map(), active: false }
 
-    // Return all directories that have sessions (from connected instances)
-    return { dirs: new Set(dirCounts.keys()), active: true }
+    // Return the most common directory only (not all — that defeats the filter)
+    const sorted = [...dirCounts.values()].sort((a, b) => b.count - a.count)
+    const result = new Map<string, string>()
+    result.set(pathKey(sorted[0].key), sorted[0].key)
+    return { dirs: result, active: true }
   }
 
   const tree = computed<SessionNode[]>(() => {
@@ -499,7 +517,7 @@ export const useSessionStore = defineStore('session', () => {
       if (session.raw?.time?.archived) continue
       if (isEmptySession(session)) continue
       // If we know which projects we're monitoring, hide sessions from other projects
-      if (hasKnownDirs && session.directory && !knownDirs.has(session.directory)) continue
+      if (hasKnownDirs && session.directory && !knownDirs.has(pathKey(session.directory))) continue
       filtered.push(session)
     }
     return computeTree(filtered[Symbol.iterator]())
@@ -512,11 +530,15 @@ export const useSessionStore = defineStore('session', () => {
     const archived: SessionNode[] = []
     for (const session of sessions.value.values()) {
       if (!session.parentID && session.raw?.time?.archived) {
-        if (hasKnownDirs && session.directory && !knownDirs.has(session.directory)) continue
+        if (hasKnownDirs && session.directory && !knownDirs.has(pathKey(session.directory))) continue
         archived.push({ ...session, children: [] })
       }
     }
-    return archived.sort((a, b) => (b.raw?.time?.archived as number ?? 0) - (a.raw?.time?.archived as number ?? 0))
+    const toMs = (v: unknown): number =>
+      typeof v === 'number' ? v
+      : typeof v === 'string' ? (Number(v) || new Date(v).getTime() || 0)
+      : 0
+    return archived.sort((a, b) => toMs(b.raw?.time?.archived) - toMs(a.raw?.time?.archived))
   })
 
   const stuckSessions = computed<SessionNode[]>(() => {
@@ -720,74 +742,46 @@ export const useSessionStore = defineStore('session', () => {
   /** Periodic archive-state sync: fetch the full session list (including
    *  archived) from each instance and reconcile local state. This catches
    *  archiving done in Zed that SSE session.updated events may miss.
-   *  Called every ~30s from useStuckDetection's interval. */
+   *  Called every ~30s from useStuckDetection's interval.
+   *  Non-destructive: uses per-session updates to avoid clobbering concurrent
+   *  SSE-driven state changes. */
   async function syncArchivedStates(): Promise<void> {
     const urls = instances.value.map(i => i.url)
     if (urls.length === 0) return
-    const map = new Map(sessions.value)
-    let changed = false
 
     for (const url of urls) {
       try {
-        // Fetch ALL sessions including archived — the server returns both
-        // when archived=true; archived ones have time.archived set.
         const response = await fetch(`${url}/api/session?archived=true&limit=500`)
         if (!response.ok) continue
         const body = await response.json() as SessionListResponse
         const serverSessions = new Map(body.data.map(s => [s.id, s]))
 
         // Mark local sessions that the server says are archived
-        for (const [id, node] of map) {
-          if (node.instanceUrl !== url) continue
-          const serverSession = serverSessions.get(id)
-          if (!serverSession) continue // session not on server at all
-          const serverArchived = serverSession.time?.archived
-          const localArchived = node.raw?.time?.archived
-          // Server says archived, local doesn't have it → sync
-          if (serverArchived && !localArchived) {
-            map.set(id, {
-              ...node,
-              raw: { ...node.raw, time: { ...node.raw.time, archived: serverArchived } },
-              lastEventTime: Date.now(),
-              lastEventType: 'sync-archived',
-            })
-            changed = true
-          }
-        }
-
-        // Also add any archived sessions we don't have locally yet (so the
-        // Archived section in the tree shows historical archives too)
         for (const [id, serverSession] of serverSessions) {
-          if (map.has(id)) continue
-          if (!serverSession.time?.archived) continue
-          const parentID = serverSession.parentID || null
-          const apiUpdatedMs = typeof serverSession.time?.updated === 'number'
-            ? serverSession.time.updated
-            : typeof serverSession.time?.updated === 'string'
-              ? new Date(serverSession.time.updated).getTime()
-              : Date.now()
-          const node: SessionNode = {
-            id,
-            parentID,
-            directory: serverSession.location?.directory ?? '',
-            title: serverSession.title ?? '',
-            agent: serverSession.agent ?? 'unknown',
-            inferredState: 'unknown',
-            lastEventTime: apiUpdatedMs,
-            lastEventType: 'sync-archived-add',
-            lastFinishReason: null,
-            messages: [],
-            children: [],
-            raw: { ...serverSession, parentID },
-            instanceUrl: url,
+          const node = sessions.value.get(id)
+          if (node && node.instanceUrl === url) {
+            const serverArchived = serverSession.time?.archived
+            if (serverArchived && !node.raw?.time?.archived) {
+              // Per-session update: each does new Map(sessions.value) → safe
+              const map = new Map(sessions.value)
+              const existing = map.get(id)
+              if (existing) {
+                map.set(id, {
+                  ...existing,
+                  raw: { ...existing.raw, time: { ...existing.raw.time, archived: serverArchived } },
+                  lastEventTime: Date.now(),
+                  lastEventType: 'sync-archived',
+                })
+                sessions.value = map
+              }
+            }
+          } else if (!node && serverSession.time?.archived) {
+            // Add previously-unknown archived sessions
+            addSession(serverSession, url)
           }
-          map.set(id, node)
-          changed = true
         }
       } catch { /* skip instance */ }
     }
-
-    if (changed) sessions.value = map
   }
 
   return {
