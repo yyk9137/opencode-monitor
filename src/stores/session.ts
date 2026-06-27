@@ -1,7 +1,6 @@
 import { defineStore } from 'pinia'
 import { ref, shallowRef, computed } from 'vue'
 import { fetch } from '@tauri-apps/plugin-http'
-import { invoke } from '@tauri-apps/api/core'
 import type {
   SessionV2Info,
   SessionListResponse,
@@ -439,13 +438,7 @@ export const useSessionStore = defineStore('session', () => {
       node.children = childrenMap.get(node.id) ?? []
     }
 
-    const topLevelIds = new Set(topLevel.map(n => n.id))
-    for (const [parentId, children] of childrenMap) {
-      if (!topLevelIds.has(parentId)) {
-        topLevel.push(...children)
-      }
-    }
-
+    // Don't promote orphaned children — matches Zed's top-level-only behavior
     return topLevel
   }
 
@@ -479,33 +472,15 @@ export const useSessionStore = defineStore('session', () => {
       }
     }
 
-    const dbg = (msg: string) => invoke('write_debug_log', { lines: msg }).catch(() => {})
-
-    if (sessions.value.size > 0) {
-      dbg(`[tree] instanceDirs: ${[...instanceDirs.entries()].map(([u, d]) => `${u}→${d}`).join(', ')}`)
-      dbg(`[tree] total sessions: ${sessions.value.size}`)
-    }
-
     const all = sessions.value.values()
     const filtered: SessionNode[] = []
-    let skippedArchived = 0
-    let skippedEmpty = 0
-    let skippedDir = 0
     for (const session of all) {
-      if (session.raw?.time?.archived) { skippedArchived++; continue }
-      if (isEmptySession(session)) { skippedEmpty++; continue }
-      // Per-instance directory filter: if this session's instance has a known
-      // projectDir, the session's directory must match it.
+      if (session.raw?.time?.archived) continue
+      if (isEmptySession(session)) continue
+      // Per-instance directory filter
       const instDir = instanceDirs.get(session.instanceUrl)
-      if (instDir && session.directory && pathKey(session.directory) !== instDir) {
-        skippedDir++
-        continue
-      }
+      if (instDir && session.directory && pathKey(session.directory) !== instDir) continue
       filtered.push(session)
-    }
-
-    if (sessions.value.size > 0) {
-      dbg(`[tree] result: ${filtered.length} shown, ${skippedArchived} archived, ${skippedEmpty} empty, ${skippedDir} wrong-dir`)
     }
 
     return computeTree(filtered[Symbol.iterator]())
