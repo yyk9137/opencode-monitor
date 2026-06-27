@@ -708,6 +708,34 @@ export const useSessionStore = defineStore('session', () => {
     }
   }
 
+  async function renameSession(sessionId: string, newTitle: string): Promise<{ ok: boolean }> {
+    const node = sessions.value.get(sessionId)
+    const url = node?.instanceUrl ?? baseUrl.value
+    try {
+      const response = await fetch(`${url}/session/${sessionId}`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ title: newTitle }),
+      })
+      if (!response.ok) return { ok: false }
+      const map = new Map(sessions.value)
+      const existing = map.get(sessionId)
+      if (existing) {
+        map.set(sessionId, {
+          ...existing,
+          title: newTitle,
+          raw: { ...existing.raw, title: newTitle },
+          lastEventTime: Date.now(),
+          lastEventType: 'rename',
+        })
+        sessions.value = map
+      }
+      return { ok: true }
+    } catch {
+      return { ok: false }
+    }
+  }
+
   /** Periodic archive-state sync: fetch the full session list (including
    *  archived) from each instance and reconcile local state. This catches
    *  archiving done in Zed that SSE session.updated events may miss.
@@ -790,6 +818,7 @@ export const useSessionStore = defineStore('session', () => {
     getSessionDiff,
     archiveSession,
     unarchiveSession,
+    renameSession,
     syncArchivedStates,
     // computed
     tree,

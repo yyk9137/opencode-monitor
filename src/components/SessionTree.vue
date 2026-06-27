@@ -12,7 +12,31 @@ import { useSessionActions } from '@/composables/useSessionActions'
 import type { SessionNode } from '@/types'
 
 const store = useSessionStore()
-const { archiveSession, unarchiveSession } = useSessionActions()
+const { archiveSession, unarchiveSession, renameSession } = useSessionActions()
+
+// ── Inline rename ─────────────────────────────────────────────────────
+const renamingId = ref<string | null>(null)
+const renameValue = ref('')
+const renameInput = ref<HTMLInputElement | null>(null)
+
+function startRename(session: SessionNode) {
+  renamingId.value = session.id
+  renameValue.value = session.title
+  // Focus input on next tick
+  setTimeout(() => renameInput.value?.focus(), 0)
+}
+
+async function confirmRename(sessionId: string) {
+  const newTitle = renameValue.value.trim()
+  if (newTitle && newTitle !== store.sessions.get(sessionId)?.title) {
+    await renameSession(sessionId, newTitle)
+  }
+  renamingId.value = null
+}
+
+function cancelRename() {
+  renamingId.value = null
+}
 
 // ── Group top-level sessions by directory ──────────────────────────────
 // Only show top-level sessions (parentID === null). Child sessions are
@@ -204,7 +228,22 @@ function tokenTotal(session: SessionNode): string {
                   :aria-label="session.inferredState"
                 />
                 <Terminal :size="12" class="agent-icon" />
-                <span class="session-title" :title="session.title">
+                <input
+                  v-if="renamingId === session.id"
+                  ref="renameInput"
+                  v-model="renameValue"
+                  class="rename-input"
+                  @keydown.enter="confirmRename(session.id)"
+                  @keydown.escape="cancelRename"
+                  @blur="confirmRename(session.id)"
+                  @click.stop
+                />
+                <span
+                  v-else
+                  class="session-title"
+                  :title="`${session.title} — double-click to rename`"
+                  @dblclick.stop="startRename(session)"
+                >
                   {{ session.title }}
                 </span>
                   <span
@@ -511,6 +550,19 @@ function tokenTotal(session: SessionNode): string {
   overflow: hidden;
   text-overflow: ellipsis;
   font-size: var(--font-size-ui);
+}
+
+.rename-input {
+  flex: 1;
+  min-width: 0;
+  font-size: var(--font-size-ui);
+  font-family: inherit;
+  color: var(--text-primary);
+  background: var(--bg-element);
+  border: 1px solid var(--border-active);
+  border-radius: 3px;
+  padding: 1px 4px;
+  outline: none;
 }
 
 .child-count {

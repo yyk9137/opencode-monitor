@@ -23,6 +23,7 @@ export interface UseSessionActionsReturn {
   refreshParts: (sessionId: string) => Promise<void>
   archiveSession: (sessionId: string) => Promise<void>
   unarchiveSession: (sessionId: string) => Promise<void>
+  renameSession: (sessionId: string, newTitle: string) => Promise<void>
 }
 
 export function useSessionActions(): UseSessionActionsReturn {
@@ -166,6 +167,20 @@ export function useSessionActions(): UseSessionActionsReturn {
     }
   }
 
+  async function renameSession(sessionId: string, newTitle: string): Promise<void> {
+    const key = `${sessionId}:rename`
+    if (inFlight[key]) return
+    inFlight[key] = true
+    try {
+      const result = await store.renameSession(sessionId, newTitle)
+      if (!result.ok) {
+        toast('Failed to rename session', 'error')
+      }
+    } finally {
+      inFlight[key] = false
+    }
+  }
+
   return {
     inFlight,
     lastError,
@@ -179,5 +194,6 @@ export function useSessionActions(): UseSessionActionsReturn {
     refreshParts,
     archiveSession,
     unarchiveSession,
+    renameSession,
   }
 }
