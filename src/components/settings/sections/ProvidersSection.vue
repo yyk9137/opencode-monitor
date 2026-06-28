@@ -205,7 +205,7 @@ function addModel(providerId: string, modelId: string) {
 
 function removeModel(providerId: string, modelId: string) {
   if (!configStore.draft?.provider?.[providerId]?.models) return
-  configStore.draft.provider[providerId].models![modelId] = {}
+  delete configStore.draft.provider[providerId].models![modelId]
   configStore.dirtyPaths.add(`provider.${providerId}.models.${modelId}`)
 }
 
@@ -283,23 +283,22 @@ async function importModelsFromServer(providerId: string) {
       return
     }
 
-    if (!configStore.draft.provider[providerId].models) {
-      configStore.draft.provider[providerId].models = {}
+    // Stage fetched models for user selection (don't write to draft yet)
+    const existingIds = new Set(Object.keys(configStore.draft.provider[providerId].models ?? {}))
+    const staged: FetchedModel[] = models
+      .filter(m => !existingIds.has(m.id))
+      .map(m => ({ id: m.id, selected: false }))
+
+    if (staged.length === 0) {
+      importMessages.value[providerId] = 'All fetched models already exist in config.'
+      await fetchLog(`[fetch-models] SKIP providerId=${providerId} all ${models.length} models already exist`)
+      return
     }
-    let added = 0
-    for (const m of models) {
-      if (!configStore.draft.provider[providerId].models![m.id]) {
-        configStore.draft.provider[providerId].models![m.id] = {
-          id: m.id,
-          name: m.id,
-          limit: { context: 128000, output: 8192 },  // required by schema — default limits
-        }
-        added++
-      }
-    }
-    configStore.dirtyPaths.add('provider.' + providerId + '.models')
-    importMessages.value[providerId] = 'Fetched ' + added + ' model' + (added !== 1 ? 's' : '') + ' from upstream.'
-    await fetchLog(`[fetch-models] SUCCESS providerId=${providerId} added=${added}`)
+
+    fetchedModels.value[providerId] = staged
+    fetchedSearch.value[providerId] = ''
+    importMessages.value[providerId] = `Found ${staged.length} new model${staged.length !== 1 ? 's' : ''}. Select which to add below.`
+    await fetchLog(`[fetch-models] STAGED providerId=${providerId} staged=${staged.length} of ${models.length} total`)
   } catch (e) {
     const errType = e instanceof Error ? e.constructor.name : typeof e
     const errMsg = String(e)
@@ -313,6 +312,92 @@ async function importModelsFromServer(providerId: string) {
 
 const showAddModel = ref<Record<string, boolean>>({})
 const newModelId = ref<Record<string, string>>({})
+
+// ── Fetched models staging (before user selects which to add) ──────────
+interface FetchedModel { id: string; selected: boolean }
+const fetchedModels = ref<Record<string, FetchedModel[]>>({})   // providerId → staged models
+const fetchedSearch = ref<Record<string, string>>({})            // providerId → search filter
+
+function filteredFetchedModels(providerId: string): FetchedModel[] {
+  const models = fetchedModels.value[providerId] ?? []
+  const q = (fetchedSearch.value[providerId] ?? '').toLowerCase().trim()
+  if (!q) return models
+  return models.filter(m => m.id.toLowerCase().includes(q))
+}
+
+function toggleFetchedSelect(providerId: string, modelId: string) {
+  const list = fetchedModels.value[providerId]
+  if (!list) return
+  const m = list.find(x => x.id === modelId)
+  if (m) m.selected = !m.selected
+}
+
+function selectAllFetched(providerId: string, select: boolean) {
+  const list = fetchedModels.value[providerId]
+  if (!list) return
+  for (const m of list) m.selected = select
+}
+
+function applySelectedModels(providerId: string) {
+  const list = fetchedModels.value[providerId]
+  if (!list) return
+  const selected = list.filter(m => m.selected)
+  if (selected.length === 0) return
+  if (!configStore.draft?.provider?.[providerId]) return
+  if (!configStore.draft.provider[providerId].models) {
+    configStore.draft.provider[providerId].models = {}
+  }
+  let added = 0
+  for (const m of selected) {
+    if (!configStore.draft.provider[providerId].models![m.id]) {
+      configStore.draft.provider[providerId].models![m.id] = {
+        id: m.id,
+        name: m.id,
+        limit: { context: 128000, output: 8192 },
+      }
+      added++
+    }
+  }
+  configStore.dirtyPaths.add('provider.' + providerId + '.models')
+  importMessages.value[providerId] = `Added ${added} model${added !== 1 ? 's' : ''}.`
+  // Clear staging
+  delete fetchedModels.value[providerId]
+  fetchedSearch.value[providerId] = ''
+}
+
+function clearFetchedModels(providerId: string) {
+  delete fetchedModels.value[providerId]
+  fetchedSearch.value[providerId] = ''
+}
+
+// ── Variant management ────────────────────────────────────────────────
+const newVariantName = ref<Record<string, string>>({})  // key: "providerId/modelId"
+
+function addVariant(providerId: string, modelId: string) {
+  const key = `${providerId}/${modelId}`
+  const name = (newVariantName.value[key] ?? '').trim()
+  if (!name) return
+  if (!configStore.draft?.provider?.[providerId]?.models?.[modelId]) return
+  const model = configStore.draft.provider[providerId].models![modelId]
+  if (!model.variants) model.variants = {}
+  if (model.variants[name]) return  // already exists
+  model.variants[name] = { disabled: false }
+  configStore.dirtyPaths.add(`provider.${providerId}.models.${modelId}.variants.${name}`)
+  newVariantName.value[key] = ''
+}
+
+function removeVariant(providerId: string, modelId: string, variantName: string) {
+  if (!configStore.draft?.provider?.[providerId]?.models?.[modelId]?.variants) return
+  delete configStore.draft.provider[providerId].models![modelId].variants![variantName]
+  configStore.dirtyPaths.add(`provider.${providerId}.models.${modelId}.variants.${variantName}`)
+}
+
+function toggleVariantDisabled(providerId: string, modelId: string, variantName: string) {
+  const v = configStore.draft?.provider?.[providerId]?.models?.[modelId]?.variants?.[variantName]
+  if (!v) return
+  v.disabled = !v.disabled
+  configStore.dirtyPaths.add(`provider.${providerId}.models.${modelId}.variants.${variantName}.disabled`)
+}
 </script>
 
 <template>
@@ -382,6 +467,37 @@ const newModelId = ref<Record<string, string>>({})
           <div v-if="importMessages[id]" class="import-success">{{ importMessages[id] }}</div>
           <div v-if="importErrors[id]" class="import-error">{{ importErrors[id] }}</div>
 
+          <!-- Fetched models picker (staged, not yet in draft) -->
+          <div v-if="fetchedModels[id]?.length" class="fetched-picker">
+            <div class="fetched-picker-header">
+              <input
+                v-model="fetchedSearch[id]"
+                class="form-input fetched-search"
+                placeholder="Filter models…"
+              />
+              <button class="btn-text-sm" @click="selectAllFetched(id, true)">Select All</button>
+              <button class="btn-text-sm" @click="selectAllFetched(id, false)">None</button>
+            </div>
+            <div class="fetched-list">
+              <label
+                v-for="fm in filteredFetchedModels(id)"
+                :key="fm.id"
+                class="fetched-item"
+              >
+                <input type="checkbox" :checked="fm.selected" @change="toggleFetchedSelect(id, fm.id)" />
+                <span class="fetched-item-id">{{ fm.id }}</span>
+              </label>
+            </div>
+            <div class="fetched-actions">
+              <button
+                class="btn-add-sm"
+                :disabled="!fetchedModels[id]?.some(m => m.selected)"
+                @click="applySelectedModels(id)"
+              >Add Selected</button>
+              <button class="btn-cancel-sm" @click="clearFetchedModels(id)">Cancel</button>
+            </div>
+          </div>
+
           <div v-for="{ modelId, model } in providerModels(id)" :key="modelId" class="model-card">
             <button class="model-header" @click="toggleModelExpand(id + '/' + modelId)">
               <component :is="expandedModel === id + '/' + modelId ? ChevronDown : ChevronRight" :size="10" />
@@ -417,6 +533,29 @@ const newModelId = ref<Record<string, string>>({})
                 <label class="form-label">Family</label>
                 <input :value="model.family ?? ''" type="text" class="form-input" placeholder="e.g. claude" @input="updateModelField(id, modelId, 'family', ($event.target as HTMLInputElement).value || undefined)" />
               </div>
+
+              <!-- Variants -->
+              <div class="variants-section">
+                <label class="form-label">Variants</label>
+                <div v-for="(vProps, vName) in (model.variants ?? {})" :key="vName" class="variant-row">
+                  <span class="variant-name">{{ vName }}</span>
+                  <label class="checkbox-label">
+                    <input type="checkbox" :checked="vProps.disabled ?? false" @change="toggleVariantDisabled(id, modelId, vName as string)" />
+                    <span>disabled</span>
+                  </label>
+                  <button class="btn-icon-delete" @click="removeVariant(id, modelId, vName as string)" title="Remove variant"><Trash2 :size="10" /></button>
+                </div>
+                <div class="variant-add-row">
+                  <input
+                    v-model="newVariantName[`${id}/${modelId}`]"
+                    class="form-input variant-input"
+                    placeholder="variant name (e.g. thinking)"
+                    @keydown.enter="addVariant(id, modelId)"
+                  />
+                  <button class="btn-add-sm" @click="addVariant(id, modelId)">Add</button>
+                </div>
+              </div>
+
               <div class="model-actions">
                 <button class="btn-delete" @click="removeModel(id, modelId)"><Trash2 :size="10" /> Remove</button>
               </div>
@@ -518,4 +657,25 @@ const newModelId = ref<Record<string, string>>({})
 .btn-add-card:hover { color: var(--text-primary); border-color: var(--text-accent); }
 .animate-spin { animation: spin 1s linear infinite; }
 @keyframes spin { to { transform: rotate(360deg); } }
+
+/* Fetched models picker */
+.fetched-picker { border: 1px solid var(--border-variant); border-radius: var(--radius-xs); padding: var(--space-6); display: flex; flex-direction: column; gap: var(--space-6); background: var(--bg-app); }
+.fetched-picker-header { display: flex; align-items: center; gap: var(--space-6); }
+.fetched-search { flex: 1; height: 24px; font-size: var(--font-size-small); }
+.fetched-list { max-height: 200px; overflow-y: auto; display: flex; flex-direction: column; gap: 1px; border: 1px solid var(--border-variant); border-radius: var(--radius-xs); background: var(--bg-editor); }
+.fetched-item { display: flex; align-items: center; gap: var(--space-6); padding: 2px var(--space-6); cursor: pointer; font-size: var(--font-size-small); }
+.fetched-item:hover { background: var(--bg-hover); }
+.fetched-item-id { font-family: var(--font-mono); font-size: 10px; color: var(--text-secondary); }
+.fetched-actions { display: flex; gap: var(--space-6); }
+.btn-text-sm { padding: 2px var(--space-6); background: transparent; border: none; color: var(--text-accent); cursor: pointer; font-size: var(--font-size-small); }
+.btn-text-sm:hover { text-decoration: underline; }
+
+/* Variants */
+.variants-section { display: flex; flex-direction: column; gap: var(--space-4); padding-top: var(--space-6); border-top: 1px solid var(--border-variant); }
+.variant-row { display: flex; align-items: center; gap: var(--space-8); padding: 2px 0; }
+.variant-name { font-family: var(--font-mono); font-size: var(--font-size-small); color: var(--text-secondary); min-width: 80px; }
+.variant-add-row { display: flex; gap: var(--space-6); align-items: center; }
+.variant-input { flex: 1; height: 24px; font-size: var(--font-size-small); }
+.btn-icon-delete { display: inline-flex; align-items: center; padding: 2px; background: transparent; border: none; color: var(--error); cursor: pointer; opacity: 0.5; }
+.btn-icon-delete:hover { opacity: 1; }
 </style>

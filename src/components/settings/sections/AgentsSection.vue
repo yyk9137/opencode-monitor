@@ -74,6 +74,49 @@ function getReasoningEffort(config: Record<string, unknown>): string {
   return ''
 }
 
+/** Get available variants for an agent's currently selected model.
+ *  Merges: draft config variants (unsaved) + API runtime variants (saved).
+ *  Draft takes precedence for same key.
+ */
+function getModelVariantOptions(agentConfig: Record<string, unknown>): { value: string; label: string }[] {
+  const model = agentConfig.model as string | undefined
+  if (!model || !model.includes('/')) return []
+
+  const [providerId, ...rest] = model.split('/')
+  const modelId = rest.join('/')  // model ID may contain slashes
+
+  const variantMap = new Map<string, { disabled?: boolean }>()
+
+  // 1. From API runtime (saved config already loaded by OpenCode)
+  const apiProvider = providers.value.find(p => p.id === providerId)
+  if (apiProvider?.models && typeof apiProvider.models === 'object' && !Array.isArray(apiProvider.models)) {
+    const apiModel = (apiProvider.models as Record<string, unknown>)[modelId] as Record<string, unknown> | undefined
+    if (apiModel?.variants && typeof apiModel.variants === 'object') {
+      for (const [name, props] of Object.entries(apiModel.variants as Record<string, { disabled?: boolean }>)) {
+        variantMap.set(name, props)
+      }
+    }
+  }
+
+  // 2. From draft config (unsaved overrides) — takes precedence
+  const draftProvider = configStore.draft?.provider?.[providerId]
+  const draftModel = draftProvider?.models?.[modelId]
+  if (draftModel?.variants) {
+    for (const [name, props] of Object.entries(draftModel.variants)) {
+      variantMap.set(name, props)
+    }
+  }
+
+  // 3. Build options: only non-disabled variants
+  const opts: { value: string; label: string }[] = []
+  for (const [name, props] of variantMap) {
+    if (!props.disabled) {
+      opts.push({ value: name, label: name })
+    }
+  }
+  return opts
+}
+
 /** Write reasoningEffort to options, remove legacy variant field */
 function setReasoningEffort(name: string, value: string) {
   if (!configStore.draft?.agent?.[name]) return
@@ -219,10 +262,11 @@ function commitPerm(name: string) {
           <div class="form-row"><label class="form-label">Reasoning Effort</label>
             <select :value="getReasoningEffort(config)" class="form-input" @change="setReasoningEffort(name, ($event.target as HTMLSelectElement).value || '')">
               <option value="">Inherit</option>
-              <option value="low">Low</option>
-              <option value="medium">Medium</option>
-              <option value="high">High</option>
-              <option value="max">Max</option>
+              <option v-for="opt in getModelVariantOptions(config)" :key="opt.value" :value="opt.value">{{ opt.label }}</option>
+              <option v-if="getModelVariantOptions(config).length === 0" value="low">Low</option>
+              <option v-if="getModelVariantOptions(config).length === 0" value="medium">Medium</option>
+              <option v-if="getModelVariantOptions(config).length === 0" value="high">High</option>
+              <option v-if="getModelVariantOptions(config).length === 0" value="max">Max</option>
             </select>
           </div>
           <div class="form-row"><label class="form-label">Color</label><input :value="config.color ?? ''" type="text" class="form-input" placeholder="#RRGGBB or theme name" @input="updateAgent(name, 'color', ($event.target as HTMLInputElement).value || undefined)" /></div>
@@ -282,10 +326,11 @@ function commitPerm(name: string) {
           <div class="form-row"><label class="form-label">Reasoning Effort</label>
             <select :value="getReasoningEffort(config)" class="form-input" @change="setReasoningEffort(name, ($event.target as HTMLSelectElement).value || '')">
               <option value="">Inherit</option>
-              <option value="low">Low</option>
-              <option value="medium">Medium</option>
-              <option value="high">High</option>
-              <option value="max">Max</option>
+              <option v-for="opt in getModelVariantOptions(config)" :key="opt.value" :value="opt.value">{{ opt.label }}</option>
+              <option v-if="getModelVariantOptions(config).length === 0" value="low">Low</option>
+              <option v-if="getModelVariantOptions(config).length === 0" value="medium">Medium</option>
+              <option v-if="getModelVariantOptions(config).length === 0" value="high">High</option>
+              <option v-if="getModelVariantOptions(config).length === 0" value="max">Max</option>
             </select>
           </div>
           <div class="form-row"><label class="form-label">Color</label><input :value="config.color ?? ''" type="text" class="form-input" placeholder="#RRGGBB or theme name" @input="updateAgent(name, 'color', ($event.target as HTMLInputElement).value || undefined)" /></div>
