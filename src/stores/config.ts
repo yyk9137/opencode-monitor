@@ -1,5 +1,5 @@
 import { defineStore } from 'pinia'
-import { ref, shallowRef, computed } from 'vue'
+import { ref, shallowRef, computed, toRaw } from 'vue'
 import { fetch } from '@tauri-apps/plugin-http'
 import { readTextFile, writeTextFile, exists } from '@tauri-apps/plugin-fs'
 import { invoke } from '@tauri-apps/api/core'
@@ -406,7 +406,7 @@ export const useConfigStore = defineStore('config', () => {
 
     try {
       const o = structuredClone(original.value) as Record<string, unknown>
-      const d = structuredClone(draft.value) as Record<string, unknown>
+      const d = structuredClone(toRaw(draft.value)) as Record<string, unknown>
       const diffs = deepDiff(o, d)
 
       if (configScope.value === 'global') {
@@ -510,7 +510,7 @@ export const useConfigStore = defineStore('config', () => {
       }
 
       // Update original to match what we just wrote
-      original.value = structuredClone(draft.value)
+      original.value = structuredClone(toRaw(draft.value))
       dirtyPaths.value = new Set()
       phase.value = 'idle'
 
